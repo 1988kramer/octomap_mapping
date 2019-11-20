@@ -197,6 +197,29 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   dynamic_reconfigure::Server<OctomapServerConfig>::CallbackType f;
   f = boost::bind(&OctomapServer::reconfigureCallback, this, _1, _2);
   m_reconfigureServer.setCallback(f);
+
+  if (!m_useBeamSensorModel)
+  {
+    double rayAngle = 2.0 * atan((0.5 * m_res) / m_maxRange);// angle between two adjacent rays
+    size_t num_azimuth_bins = 2.0 * m_azimuthFov / rayAngle;
+    size_t num_elevation_bins = 2.0 * m_elevationFov / rayAngle;
+    m_radarRays.resize(num_azimuth_bins);
+    for (int i = 0; i < num_azimuth_bins; i++)
+      m_radarRays[i].resize(num_elevation_bins);
+
+    for (int i = 0; i < num_azimuth_bins; i++)
+    {
+      for (int j = 0; j < num_elevation_bins; j++)
+      {
+        double el_angle = double(j) * rayAngle - m_elevationFov;
+        double az_angle = double(i) * rayAngle - m_azimuthFov;
+        Eigen::Vector3d ray(cos(az_angle) * cos(el_angle),
+                            sin(az_angle) * cos(el_angle),
+                            sin(el_angle));
+        m_radarRays[i][j] = ray;
+      }
+    }
+  }
 }
 
 OctomapServer::~OctomapServer(){
@@ -374,26 +397,52 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
 void OctomapServer::insertRadarScan(const tf::StampedTransform& sensorPoseTf, 
                                     const PCLPointCloud& pointCloud)
 {
-  point3d sensorOrigin = pointTfToOctomap(sensorPoseTf.getOrigin());
-  Eigen::Matrix4d sensorPose;
-  pcl_ros::TransformAsMatrix(sensorPoseTf, sensorPose);
+  Eigen::Matrix4f sensorPose;
+  pcl_ros::transformAsMatrix(sensorPoseTf, sensorPose);
 
-  if (!m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMin),
-    || !m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMax))
-  {
-    ROS_ERROR_STREAM("Could not generate key for origin " << sensorOrigin);
-  }
+  #ifdef COLOR_OCTOMAP_SERVER
+  unsigned char* colors = new unsigned char[3];
+  #endif
 
   KeySet free_cells, occupied_cells;
 
   // get all cells within the sensor's field of view
-
-
-  // expand min and max cells as necessary
-  for (KeySet::iterator it = free_cells.begin(); it != free_cells.end(); it++)
+  // there really must be a more efficient way to do this
+  for (int i = 0; i < m_radarRays.size(); i++)
   {
-    updateMinKey(*it, m_updateBBXMin);
-    updateMaxKey(*it, m_updateBBXMax);
+    for (int j = 0; j < m_radarRays[i].size(); j++)
+    {
+      Eigen::Vector4f sensorFrameRayStart(m_radarRays[i][j].x() * m_minRange,
+                                          m_radarRays[i][j].y() * m_minRange,
+                                          m_radarRays[i][j].z() * m_minRange,
+                                          1.0);
+      Eigen::Vector4f sensorFrameRayEnd(m_radarRays[i][j].x() * m_maxRange,
+                                        m_radarRays[i][j].y() * m_maxRange,
+                                        m_radarRays[i][j].z() * m_maxRange,
+                                        1.0);
+      Eigen::Vector4f globalFrameRayStart = sensorPose * sensorFrameRayStart;
+      Eigen::Vector4f globalFrameRayEnd = sensorPose * sensorFrameRayEnd;
+      point3d startPoint(globalFrameRayStart[0],
+                         globalFrameRayStart[1],
+                         globalFrameRayStart[2]);
+      point3d endPoint(globalFrameRayEnd[0],
+                       globalFrameRayEnd[1],
+                       globalFrameRayEnd[2]);
+
+      if (m_octree->computeRayKeys(startPoint, endPoint, m_keyRay))
+        free_cells.insert(m_keyRay.begin(), m_keyRay.end());
+
+      octomap::OcTreeKey endKey;
+      if (m_octree->coordToKeyChecked(endPoint, endKey))
+      {
+        updateMinKey(endKey, m_updateBBXMin);
+        updateMaxKey(endKey, m_updateBBXMax);
+      }
+      else
+      {
+        ROS_ERROR_STREAM("Could not generate key for radar fov point " << endPoint);
+      }
+    }
   }
 
   // remove cells that contain targets from the free cell set 
@@ -417,6 +466,41 @@ void OctomapServer::insertRadarScan(const tf::StampedTransform& sensorPoseTf,
       ROS_ERROR_STREAM("could not create Key for radar target at " << target);
     }
   }
+
+  // update occupancy probability for free cells
+  for (KeySet::iterator it = free_cells.begin(); 
+    it != free_cells.end(); it++)
+  {
+    m_octree->updateNode(*it, false);
+  }
+
+  // update occupancy probability for occupied cells
+  for (KeySet::iterator it = occupied_cells.begin(); 
+    it != occupied_cells.end(); it++)
+  {
+    m_octree->updateNode(*it, true);
+  }
+
+  octomap::point3d minPt, maxPt;
+  ROS_DEBUG_STREAM("Bounding box keys (before): "
+    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
+    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
+  minPt = m_octree->keyToCoord(m_updateBBXMin);
+  maxPt = m_octree->keyToCoord(m_updateBBXMax);
+  ROS_DEBUG_STREAM("Bounding box keys (after): "
+    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
+    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
+
+  if (m_compressMap)
+    m_octree->prune();
+
+  #ifdef COLOR_OCTOMAP_SERVER
+  if (colors)
+  {
+    delete[] colors;
+    colors = NULL;
+  }
+  #endif
 }
 
 void OctomapServer::insertScan(const tf::Point& sensorOriginTf, 

@@ -272,6 +272,8 @@ protected:
   unsigned m_multires2DScale;
   bool m_projectCompleteMap;
   bool m_useColoredMap;
+
+  std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
 };
 }
 
