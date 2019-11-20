@@ -46,6 +46,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_reconfigureServer(m_config_mutex),
   m_octree(NULL),
   m_maxRange(-1.0),
+  m_minRange(0.0),
   m_worldFrameId("/map"), m_baseFrameId("base_footprint"),
   m_useHeightMap(true),
   m_useColoredMap(false),
@@ -68,7 +69,10 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_groundFilterDistance(0.04), m_groundFilterAngle(0.15), m_groundFilterPlaneDistance(0.07),
   m_compressMap(true),
   m_incrementalUpdate(false),
-  m_initConfig(true)
+  m_initConfig(true),
+  m_useBeamSensorModel(true),
+  m_azimuthFov(1.039),
+  m_elevationFov(0.785)
 {
   double probHit, probMiss, thresMin, thresMax;
 
@@ -99,7 +103,11 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   // distance of found plane from z=0 to be detected as ground (e.g. to exclude tables)
   private_nh.param("ground_filter/plane_distance", m_groundFilterPlaneDistance, m_groundFilterPlaneDistance);
 
+  private_nh.param("use_beam_model", m_useBeamSensorModel, m_useBeamSensorModel);
   private_nh.param("sensor_model/max_range", m_maxRange, m_maxRange);
+  private_nh.param("sensor_model/min_range", m_minRange, m_minRange);
+  private_nh.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
+  private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
 
   private_nh.param("resolution", m_res, m_res);
   private_nh.param("sensor_model/hit", probHit, 0.7);
@@ -107,7 +115,11 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("sensor_model/min", thresMin, 0.12);
   private_nh.param("sensor_model/max", thresMax, 0.97);
   private_nh.param("compress_map", m_compressMap, m_compressMap);
-  private_nh.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);
+  private_nh.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);  
+
+  // only filter ground plane if using beam sensor model
+  if (!m_useBeamSensorModel)
+    m_filterGroundPlane = false;
 
   if (m_filterGroundPlane && (m_pointcloudMinZ > 0.0 || m_pointcloudMaxZ < 0.0)){
     ROS_WARN_STREAM("You enabled ground filtering but incoming pointclouds will be pre-filtered in ["
@@ -295,15 +307,17 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   PCLPointCloud pc_ground; // segmented ground plane
   PCLPointCloud pc_nonground; // everything else
 
-  if (m_filterGroundPlane){
+  if (m_filterGroundPlane)
+  {
     tf::StampedTransform sensorToBaseTf, baseToWorldTf;
-    try{
+    try
+    {
       m_tfListener.waitForTransform(m_baseFrameId, cloud->header.frame_id, cloud->header.stamp, ros::Duration(0.2));
       m_tfListener.lookupTransform(m_baseFrameId, cloud->header.frame_id, cloud->header.stamp, sensorToBaseTf);
       m_tfListener.lookupTransform(m_worldFrameId, m_baseFrameId, cloud->header.stamp, baseToWorldTf);
-
-
-    }catch(tf::TransformException& ex){
+    }
+    catch(tf::TransformException& ex)
+    {
       ROS_ERROR_STREAM( "Transform error for ground plane filter: " << ex.what() << ", quitting callback.\n"
                         "You need to set the base_frame_id or disable filter_ground.");
     }
@@ -326,7 +340,9 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
     // transform clouds to world frame for insertion
     pcl::transformPointCloud(pc_ground, pc_ground, baseToWorld);
     pcl::transformPointCloud(pc_nonground, pc_nonground, baseToWorld);
-  } else {
+  } 
+  else 
+  {
     // directly transform to map frame:
     pcl::transformPointCloud(pc, pc, sensorToWorld);
 
@@ -344,8 +360,10 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
     pc_nonground.header = pc.header;
   }
 
-
-  insertScan(sensorToWorldTf.getOrigin(), pc_ground, pc_nonground);
+  if (m_useBeamSensorModel)
+    insertScan(sensorToWorldTf.getOrigin(), pc_ground, pc_nonground);
+  else
+    insertRadarScan(sensorToWorldTf, pc_nonground);
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
@@ -353,7 +371,67 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   publishAll(cloud->header.stamp);
 }
 
-void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCloud& ground, const PCLPointCloud& nonground){
+void OctomapServer::insertRadarScan(const tf::StampedTransform& sensorPoseTf, 
+                                    const PCLPointCloud& pointCloud)
+{
+  point3d sensorOrigin = pointTfToOctomap(sensorPoseTf.getOrigin());
+
+  if (!m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMin),
+    || !m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMax))
+  {
+    ROS_ERROR_STREAM("Could not generate key for origin " << sensorOrigin);
+  }
+
+  KeySet occupied_cells;
+  for (PCLPointCloud::const_iterator it = pointCloud.begin(); 
+       it != pointCloud.end(); it++)
+  {
+    point3d target(it->x, it->y, it->z);
+    double range = (target - sensorOrigin).norm();
+
+    // check point within range
+    if (((m_maxRange < 0.0) || range <= m_maxRange) && range >= m_minRange)
+    {
+      // get azimuth and elevation angle
+      PCLPoint sensor_frame_point;
+      pcl::transformPoint(*it, sensor_frame_point, sensorPoseTf.inverse());
+      point3d target_vector(sensor_frame_point.x, 
+                            sensor_frame_point.y,
+                            sensor_frame_point.z);
+      target_vector.normalize();
+      double elevation_angle = asin(target_vector[2]);
+
+      target_vector[2] = 0.0;
+      target_vector.normalize();
+      double azimuth_angle = asin(target_vector[1]);
+
+      // check point within fov
+      if (std::fabs(azimuth_angle) <= m_azimuthFov
+          && std::fabs(elevation_angle) <= m_elevationFov)
+      {
+        octomap::OcTreeKey targetKey;
+        if(m_octree->coordToKeyChecked(target, targetKey))
+        {
+          occupied_cells.insert(targetKey);
+          updateMinKey(targetKey, m_updateBBXMin);
+          updateMaxKey(targetKey, m_updateBBXMax);
+        }
+        else
+        {
+          ROS_ERROR_STREAM("could not create Key for radar target at " << target);
+        }
+      }
+    }
+  }
+
+  KeySet free_cells;
+
+}
+
+void OctomapServer::insertScan(const tf::Point& sensorOriginTf, 
+                               const PCLPointCloud& ground, 
+                               const PCLPointCloud& nonground)
+{
   point3d sensorOrigin = pointTfToOctomap(sensorOriginTf);
 
   if (!m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMin)
