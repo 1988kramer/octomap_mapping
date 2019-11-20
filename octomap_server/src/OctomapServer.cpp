@@ -375,6 +375,8 @@ void OctomapServer::insertRadarScan(const tf::StampedTransform& sensorPoseTf,
                                     const PCLPointCloud& pointCloud)
 {
   point3d sensorOrigin = pointTfToOctomap(sensorPoseTf.getOrigin());
+  Eigen::Matrix4d sensorPose;
+  pcl_ros::TransformAsMatrix(sensorPoseTf, sensorPose);
 
   if (!m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMin),
     || !m_octree->coordToKeyChecked(sensorOrigin, m_updateBBXMax))
@@ -382,50 +384,39 @@ void OctomapServer::insertRadarScan(const tf::StampedTransform& sensorPoseTf,
     ROS_ERROR_STREAM("Could not generate key for origin " << sensorOrigin);
   }
 
-  KeySet occupied_cells;
+  KeySet free_cells, occupied_cells;
+
+  // get all cells within the sensor's field of view
+
+
+  // expand min and max cells as necessary
+  for (KeySet::iterator it = free_cells.begin(); it != free_cells.end(); it++)
+  {
+    updateMinKey(*it, m_updateBBXMin);
+    updateMaxKey(*it, m_updateBBXMax);
+  }
+
+  // remove cells that contain targets from the free cell set 
+  // and add them to the occupied cell set
   for (PCLPointCloud::const_iterator it = pointCloud.begin(); 
        it != pointCloud.end(); it++)
   {
     point3d target(it->x, it->y, it->z);
-    double range = (target - sensorOrigin).norm();
-
-    // check point within range
-    if (((m_maxRange < 0.0) || range <= m_maxRange) && range >= m_minRange)
+    octomap::OcTreeKey targetKey;
+    if(m_octree->coordToKeyChecked(target, targetKey))
     {
-      // get azimuth and elevation angle
-      PCLPoint sensor_frame_point;
-      pcl::transformPoint(*it, sensor_frame_point, sensorPoseTf.inverse());
-      point3d target_vector(sensor_frame_point.x, 
-                            sensor_frame_point.y,
-                            sensor_frame_point.z);
-      target_vector.normalize();
-      double elevation_angle = asin(target_vector[2]);
-
-      target_vector[2] = 0.0;
-      target_vector.normalize();
-      double azimuth_angle = asin(target_vector[1]);
-
-      // check point within fov
-      if (std::fabs(azimuth_angle) <= m_azimuthFov
-          && std::fabs(elevation_angle) <= m_elevationFov)
+      KeySet::iterator key_it = free_cells.find(targetKey);
+      if (key_it != free_cells.end())
       {
-        octomap::OcTreeKey targetKey;
-        if(m_octree->coordToKeyChecked(target, targetKey))
-        {
-          occupied_cells.insert(targetKey);
-          updateMinKey(targetKey, m_updateBBXMin);
-          updateMaxKey(targetKey, m_updateBBXMax);
-        }
-        else
-        {
-          ROS_ERROR_STREAM("could not create Key for radar target at " << target);
-        }
+        free_cells.erase(key_it);
+        occupied_cells.insert(targetKey);
       }
     }
+    else
+    {
+      ROS_ERROR_STREAM("could not create Key for radar target at " << target);
+    }
   }
-
-  KeySet free_cells;
-
 }
 
 void OctomapServer::insertScan(const tf::Point& sensorOriginTf, 
