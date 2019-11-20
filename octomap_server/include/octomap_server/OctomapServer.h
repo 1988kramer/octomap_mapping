@@ -135,6 +135,15 @@ protected:
   */
   virtual void insertScan(const tf::Point& sensorOrigin, const PCLPointCloud& ground, const PCLPointCloud& nonground);
 
+  /**
+    * @brief update occupancy map with ground and nonground scans using the radar sensor model
+    * Input scans should be in the global map frame
+    *
+    * @param sensorPose The pose of the sensor in the global frame
+    * @param pointCloud Radar returns in the global frame
+    */
+  void insertRadarScan(const tf::StampedTransform& sensorPoseTf, const PCLPointCloud& pointCloud);
+
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
 
@@ -213,6 +222,7 @@ protected:
   octomap::OcTreeKey m_updateBBXMax;
 
   double m_maxRange;
+  double m_minRange;
   std::string m_worldFrameId; // the map frame
   std::string m_baseFrameId; // base of the robot for ground plane filtering
   bool m_useHeightMap;
@@ -243,6 +253,11 @@ protected:
   double m_groundFilterDistance;
   double m_groundFilterAngle;
   double m_groundFilterPlaneDistance;
+
+  bool m_useBeamSensorModel;
+
+  double m_azimuthFov;
+  double m_elevationFov;
 
   bool m_compressMap;
 
