@@ -74,8 +74,6 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_azimuthFov(1.039),
   m_elevationFov(0.785)
 {
-  double probHit, probMiss, thresMin, thresMax;
-
   ros::NodeHandle private_nh(private_nh_);
   private_nh.param("frame_id", m_worldFrameId, m_worldFrameId);
   private_nh.param("base_frame_id", m_baseFrameId, m_baseFrameId);
@@ -110,10 +108,10 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
 
   private_nh.param("resolution", m_res, m_res);
-  private_nh.param("sensor_model/hit", probHit, 0.7);
-  private_nh.param("sensor_model/miss", probMiss, 0.4);
-  private_nh.param("sensor_model/min", thresMin, 0.12);
-  private_nh.param("sensor_model/max", thresMax, 0.97);
+  private_nh.param("sensor_model/hit", m_probHit, 0.7);
+  private_nh.param("sensor_model/miss", m_probMiss, 0.4);
+  private_nh.param("sensor_model/min", m_thresMin, 0.12);
+  private_nh.param("sensor_model/max", m_thresMax, 0.97);
   private_nh.param("compress_map", m_compressMap, m_compressMap);
   private_nh.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);  
 
@@ -143,10 +141,10 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
 
   // initialize octomap object & params
   m_octree = new OcTreeT(m_res);
-  m_octree->setProbHit(probHit);
-  m_octree->setProbMiss(probMiss);
-  m_octree->setClampingThresMin(thresMin);
-  m_octree->setClampingThresMax(thresMax);
+  m_octree->setProbHit(m_probHit);
+  m_octree->setProbMiss(m_probMiss);
+  m_octree->setClampingThresMin(m_thresMin);
+  m_octree->setClampingThresMax(m_thresMax);
   m_treeDepth = m_octree->getTreeDepth();
   m_maxTreeDepth = m_treeDepth;
   m_gridmap.info.resolution = m_res;
@@ -238,7 +236,131 @@ OctomapServer::~OctomapServer(){
     delete m_octree;
     m_octree = NULL;
   }
+}
 
+void OctomapServer::resetMap()
+{
+  delete m_octree;
+  m_octree = new OcTreeT(m_res);
+  m_octree->setProbHit(m_probHit);
+  m_octree->setProbMiss(m_probMiss);
+  m_octree->setClampingThresMin(m_thresMin);
+  m_octree->setClampingThresMax(m_thresMax);
+}
+
+PCLPointCloud OctomapServer::filterReflections(PCLPointCloud& cloud)
+{
+  // detect point clusters
+  pcl::search::KdTree<RadarPoint>::Ptr tree(new pcl::search::KdTree<RadarPoint>());
+  tree->setInputCloud(cloud);
+  std::vector<pcl::PointIndices> cluster_indices;
+  pcl::EuclideanClusterExtraction<RadarPoint> ec;
+  ec.setClusterTolerance(0.2);
+  ec.setMinClusterSize(1);
+  ec.setMaxClusterSize(20);
+  ec.setSearchMethod(tree);
+  ec.setInputCloud(cloud);
+  ec.extract(cluster_indices);
+
+  pcl::PointCloud<RadarPoint>::Ptr clustered_cloud(new pcl::PointCloud<RadarPoint>());
+
+    // determine if clusters are roughly on same ray from sensor
+    // if so cluster is likely reflections
+  for (std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin();
+    it != cluster_indices.end(); it++)
+  {
+    std::vector<int> indices_copy = it->indices;
+    bool replace_with_mean = false;
+    if (indices_copy.size() >= 3)
+    {
+        //LOG(ERROR) << "getting rays";
+        // get unit ray pointing toward each point in the cluster
+      std::vector<Eigen::Vector3d> rays;
+      for (std::vector<int>::const_iterator pit = it->indices.begin();
+        pit != it->indices.end(); pit++)
+      {
+        Eigen::Vector3d unit_ray(cloud->points[*pit].x,
+         cloud->points[*pit].y,
+         cloud->points[*pit].z);
+        unit_ray.normalize();
+        rays.push_back(unit_ray);
+      }
+        //LOG(ERROR) << "getting angles";
+        // determine the angle between each pair of points
+      Eigen::MatrixXd angles(rays.size(), rays.size());
+      angles.setZero();
+
+      for (int i = 0; i < rays.size(); i++)
+      {
+        for (int j = i+1; j < rays.size(); j++)
+        {
+          angles(i,j) = std::fabs(acos(rays[i].dot(rays[j])));
+          angles(j,i) = angles(i,j);
+        }
+      }
+        //LOG(ERROR) << "checking for outliers";
+        // remove outliers
+      int cluster_idx = 0;
+      for (int i = 0; i < angles.cols(); i++)
+      {
+        double min_angle = 10.0;
+        for (int j = 0; j < angles.rows(); j++)
+        {
+          if (i != j && angles(i,j) < min_angle) 
+            min_angle = angles(i,j);
+        }
+        if (min_angle > 2.0 * bin_width_)
+        {
+            //LOG(ERROR) << "removing outlier at " << cluster_idx << " from cluster of size " << indices_copy.size();
+          indices_copy.erase(indices_copy.begin() + cluster_idx);
+        }
+        else
+        {
+          cluster_idx++;
+        }
+      }
+      replace_with_mean = indices_copy.size() > 3;
+    }
+      // if max angle is less than bin width, add the 
+      // mean of the points to the new cloud
+    if (replace_with_mean)
+    {
+      RadarPoint mean_point;
+      mean_point.x = 0.0;
+      mean_point.y = 0.0;
+      mean_point.z = 0.0;
+      mean_point.intensity = 0.0;
+      mean_point.doppler = 0.0;
+      mean_point.range = 0.0;
+      for (std::vector<int>::const_iterator pit = indices_copy.begin();
+        pit != indices_copy.end(); pit++)
+      {
+        mean_point.x += cloud->points[*pit].x;
+        mean_point.y += cloud->points[*pit].y;
+        mean_point.z += cloud->points[*pit].z;
+        mean_point.intensity += cloud->points[*pit].intensity;
+        mean_point.doppler += cloud->points[*pit].doppler;
+        mean_point.range += cloud->points[*pit].range;
+      }
+      mean_point.x /= indices_copy.size();
+      mean_point.y /= indices_copy.size();
+      mean_point.z /= indices_copy.size();
+      mean_point.intensity /= indices_copy.size();
+      mean_point.doppler /= indices_copy.size();
+      mean_point.range /= indices_copy.size();
+
+      clustered_cloud->points.push_back(mean_point);
+    }
+    else // add the individual points to the cloud
+    {
+      for (std::vector<int>::const_iterator pit = it->indices.begin();
+        pit != it->indices.end(); pit++)
+      {
+        clustered_cloud->points.push_back(cloud->points[*pit]);
+      }
+    }
+  }
+  return clustered_cloud;
 }
 
 bool OctomapServer::openFile(const std::string& filename){

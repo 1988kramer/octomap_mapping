@@ -144,6 +144,17 @@ protected:
     */
   void insertRadarScan(const tf::StampedTransform& sensorPoseTf, const PCLPointCloud& pointCloud);
 
+
+  /// @brief Clears the current octomap and initializes a new one
+  void resetMap();
+
+  /**
+    * @brief filters multipath reflections from input radar point cloud
+    * @param cloud The raw pointcloud
+    * @return filtered point cloud
+    */
+  PCLPointCloud filterReflections(PCLPointCloud& cloud);
+
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
 
@@ -247,6 +258,10 @@ protected:
   double m_occupancyMaxZ;
   double m_minSizeX;
   double m_minSizeY;
+  double m_probHit;
+  double m_probMiss;
+  double m_thresMin;
+  double m_thresMax;
   bool m_filterSpeckles;
 
   bool m_filterGroundPlane;
