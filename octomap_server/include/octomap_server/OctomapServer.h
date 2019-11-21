@@ -142,8 +142,10 @@ protected:
     * @param sensorPose The pose of the sensor in the global frame
     * @param pointCloud Radar returns in the global frame
     */
-  void insertRadarScan(const tf::StampedTransform& sensorPoseTf, const PCLPointCloud& pointCloud);
+  void insertRadarScanToMap(const PCLPointCloud& pointCloud, const Eigen::Matrix4f& sensorPose);
 
+  void insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
+                                     const PCLPointCloud& pointCloud)
 
   /// @brief Clears the current octomap and initializes a new one
   void resetMap();
@@ -289,6 +291,9 @@ protected:
   bool m_useColoredMap;
 
   std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
+  std::deque<std::pair<PCLPointCloud,Eigen::Matrix4f,
+    Eigen::aligned_allocator<std::pair<PCLPointCloud,Eigen::Matrix4f>>>> m_pointClouds;
+  int m_numScansInWindow;
 };
 }
 

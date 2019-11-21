@@ -72,7 +72,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_initConfig(true),
   m_useBeamSensorModel(true),
   m_azimuthFov(1.039),
-  m_elevationFov(0.785)
+  m_elevationFov(0.785),
+  m_numScansInWindow(10)
 {
   ros::NodeHandle private_nh(private_nh_);
   private_nh.param("frame_id", m_worldFrameId, m_worldFrameId);
@@ -106,6 +107,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("sensor_model/min_range", m_minRange, m_minRange);
   private_nh.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
   private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
+  private_nh.param("num_scans_in_window", m_numScansInWindow, m_numScansInWindow);
 
   private_nh.param("resolution", m_res, m_res);
   private_nh.param("sensor_model/hit", m_probHit, 0.7);
@@ -488,6 +490,10 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   } 
   else 
   {
+    
+    if (m_useBeamSensorModel)
+      pc = filterReflections(pc);
+
     // directly transform to map frame:
     pcl::transformPointCloud(pc, pc, sensorToWorld);
 
@@ -506,9 +512,13 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   }
 
   if (m_useBeamSensorModel)
+  {
     insertScan(sensorToWorldTf.getOrigin(), pc_ground, pc_nonground);
+  }
   else
-    insertRadarScan(sensorToWorldTf, pc_nonground);
+  {
+    insertRadarScanToDeque(sensorToWorldTf, pc_nonground);
+  }
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
@@ -516,12 +526,29 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   publishAll(cloud->header.stamp);
 }
 
-void OctomapServer::insertRadarScan(const tf::StampedTransform& sensorPoseTf, 
-                                    const PCLPointCloud& pointCloud)
+void OctomapServer::insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
+                                     const PCLPointCloud& pointCloud)
 {
   Eigen::Matrix4f sensorPose;
   pcl_ros::transformAsMatrix(sensorPoseTf, sensorPose);
 
+  m_pointClouds.push_front(std::make_pair(pointCloud, sensorPose));
+  if (m_pointClouds.size() > m_numScansInWindow)
+    m_pointClouds.pop_back();
+
+  Eigen::Matrix4f initial_pose_inv = m_pointClouds.front().second.inverse();
+  for (int i = 0; i < m_pointClouds.size(); i++)
+    insertRadarScanToMap(m_pointClouds[i].first, initial_pose_inv * m_pointClouds[i].second);
+}
+
+
+/*
+* Note: currently getting scans in global frame, needs to get scans in 
+*       sensor frame and transform based on sensorpose parameter
+*/
+void OctomapServer::insertRadarScanToMap(const PCLPointCloud& pointCloud,
+                                    const Eigen::Matrix4f& sensorPose)
+{
   #ifdef COLOR_OCTOMAP_SERVER
   unsigned char* colors = new unsigned char[3];
   #endif
