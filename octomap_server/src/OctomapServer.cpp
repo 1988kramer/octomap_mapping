@@ -74,7 +74,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_azimuthFov(1.039),
   m_elevationFov(0.785),
   m_numScansInWindow(10),
-  m_binWidth(0.035)
+  m_binWidth(0.070)
 {
   ros::NodeHandle private_nh(private_nh_);
   private_nh.param("frame_id", m_worldFrameId, m_worldFrameId);
@@ -520,12 +520,12 @@ void OctomapServer::insertRadarScanToDeque(const tf::StampedTransform& sensorPos
   {
     m_pointClouds.pop_back();
   }
-  Eigen::Matrix4f initial_pose_inv = m_pointClouds.front().second.inverse();
+  Eigen::Matrix4f initial_pose = m_pointClouds.front().second;
   PCLPointCloud composed_cloud;
   for (int i = 0; i < m_pointClouds.size(); i++)
   {
     PCLPointCloud tfCloud;
-    pcl::transformPointCloud(m_pointClouds[i].first, tfCloud, initial_pose_inv * m_pointClouds[i].second);
+    pcl::transformPointCloud(m_pointClouds[i].first, tfCloud, initial_pose.inverse() * m_pointClouds[i].second);
     composed_cloud += tfCloud;
   }
   insertRadarScanToMap(composed_cloud, Eigen::Matrix4f::Identity());
@@ -920,7 +920,10 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     for (unsigned i= 0; i < occupiedNodesVis.markers.size(); ++i){
       double size = m_octree->getNodeSize(i);
 
-      occupiedNodesVis.markers[i].header.frame_id = m_worldFrameId;
+      if (m_useBeamSensorModel)
+        occupiedNodesVis.markers[i].header.frame_id = m_worldFrameId;
+      else
+        occupiedNodesVis.markers[i].header.frame_id = m_baseFrameId;
       occupiedNodesVis.markers[i].header.stamp = rostime;
       occupiedNodesVis.markers[i].ns = "map";
       occupiedNodesVis.markers[i].id = i;
