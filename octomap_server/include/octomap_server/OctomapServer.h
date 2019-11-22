@@ -52,6 +52,8 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/kdtree/kdtree.h>
 
 
 #include <tf/transform_listener.h>
@@ -144,18 +146,24 @@ protected:
     */
   void insertRadarScanToMap(const PCLPointCloud& pointCloud, const Eigen::Matrix4f& sensorPose);
 
+  /**
+    * @brief Adds the most recent scan to map window and removes the oldest if necessary
+    * @param[in] sensorPoseTf The transform describing the sensor's estimated 
+    *                          pose in the world frame
+    * @param[in] pointCloud The point cloud in the sensor frame
+    */
   void insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
-                                     const PCLPointCloud& pointCloud)
+                                     const PCLPointCloud& pointCloud);
 
   /// @brief Clears the current octomap and initializes a new one
   void resetMap();
 
   /**
     * @brief filters multipath reflections from input radar point cloud
-    * @param cloud The raw pointcloud
-    * @return filtered point cloud
+    * @param[in] cloud The raw pointcloud
+    * @param[out] out_cloud filtered point cloud
     */
-  PCLPointCloud filterReflections(PCLPointCloud& cloud);
+  void filterReflections(const PCLPointCloud& cloud, PCLPointCloud& out_cloud);
 
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
@@ -264,6 +272,7 @@ protected:
   double m_probMiss;
   double m_thresMin;
   double m_thresMax;
+  double m_binWidth;
   bool m_filterSpeckles;
 
   bool m_filterGroundPlane;
@@ -291,8 +300,7 @@ protected:
   bool m_useColoredMap;
 
   std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
-  std::deque<std::pair<PCLPointCloud,Eigen::Matrix4f,
-    Eigen::aligned_allocator<std::pair<PCLPointCloud,Eigen::Matrix4f>>>> m_pointClouds;
+  std::deque<std::pair<PCLPointCloud,Eigen::Matrix4f> > m_pointClouds;
   int m_numScansInWindow;
 };
 }
