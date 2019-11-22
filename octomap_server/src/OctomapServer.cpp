@@ -242,27 +242,17 @@ OctomapServer::~OctomapServer(){
   }
 }
 
-void OctomapServer::resetMap()
-{
-  delete m_octree;
-  m_octree = new OcTreeT(m_res);
-  m_octree->setProbHit(m_probHit);
-  m_octree->setProbMiss(m_probMiss);
-  m_octree->setClampingThresMin(m_thresMin);
-  m_octree->setClampingThresMax(m_thresMax);
-}
-
 void OctomapServer::filterReflections(const PCLPointCloud& cloud,
                                       PCLPointCloud& out_cloud)
 {
   // detect point clusters
-  boost::shared_ptr<const PCLPointCloud> cloudPtr(&cloud);
+  boost::shared_ptr<const PCLPointCloud> cloudPtr(new const PCLPointCloud(cloud));
   pcl::search::KdTree<PCLPoint>::Ptr tree(new pcl::search::KdTree<PCLPoint>());
   tree->setInputCloud(cloudPtr);
   std::vector<pcl::PointIndices> cluster_indices;
   pcl::EuclideanClusterExtraction<PCLPoint> ec;
   ec.setClusterTolerance(0.2);
-  ec.setMinClusterSize(1);
+  ec.setMinClusterSize(3);
   ec.setMaxClusterSize(20);
   ec.setSearchMethod(tree);
   ec.setInputCloud(cloudPtr);
@@ -270,8 +260,8 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
 
   out_cloud.clear();
 
-    // determine if clusters are roughly on same ray from sensor
-    // if so cluster is likely reflections
+  // determine if clusters are roughly on same ray from sensor
+  // if so cluster is likely reflections
   for (std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin();
     it != cluster_indices.end(); it++)
   {
@@ -279,8 +269,7 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
     bool replace_with_mean = false;
     if (indices_copy.size() >= 3)
     {
-        //LOG(ERROR) << "getting rays";
-        // get unit ray pointing toward each point in the cluster
+      // get unit ray pointing toward each point in the cluster
       std::vector<Eigen::Vector3d> rays;
       for (std::vector<int>::const_iterator pit = it->indices.begin();
         pit != it->indices.end(); pit++)
@@ -291,8 +280,7 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
         unit_ray.normalize();
         rays.push_back(unit_ray);
       }
-        //LOG(ERROR) << "getting angles";
-        // determine the angle between each pair of points
+      // determine the angle between each pair of points
       Eigen::MatrixXd angles(rays.size(), rays.size());
       angles.setZero();
 
@@ -304,8 +292,7 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
           angles(j,i) = angles(i,j);
         }
       }
-        //LOG(ERROR) << "checking for outliers";
-        // remove outliers
+      // remove outliers
       int cluster_idx = 0;
       for (int i = 0; i < angles.cols(); i++)
       {
@@ -317,7 +304,6 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
         }
         if (min_angle > 2.0 * m_binWidth)
         {
-            //LOG(ERROR) << "removing outlier at " << cluster_idx << " from cluster of size " << indices_copy.size();
           indices_copy.erase(indices_copy.begin() + cluster_idx);
         }
         else
@@ -327,8 +313,9 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
       }
       replace_with_mean = indices_copy.size() > 3;
     }
-      // if max angle is less than bin width, add the 
-      // mean of the points to the new cloud
+
+    // if max angle is less than bin width, add the 
+    // mean of the points to the new cloud
     if (replace_with_mean)
     {
       PCLPoint mean_point;
@@ -485,26 +472,22 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   else 
   {
     
-    if (m_useBeamSensorModel)
+    if (!m_useBeamSensorModel)
     {
-      PCLPointCloud filtered_cloud;
-      filterReflections(pc, filtered_cloud);
-      pc = filtered_cloud;
+      filterReflections(pc, pc_nonground);
     }
     else
     {
       pcl::transformPointCloud(pc, pc, sensorToWorld);
+      // just filter height range:
+      pass_x.setInputCloud(pc.makeShared());
+      pass_x.filter(pc);
+      pass_y.setInputCloud(pc.makeShared());
+      pass_y.filter(pc);
+      pass_z.setInputCloud(pc.makeShared());
+      pass_z.filter(pc);
+      pc_nonground = pc;
     }
-
-    // just filter height range:
-    pass_x.setInputCloud(pc.makeShared());
-    pass_x.filter(pc);
-    pass_y.setInputCloud(pc.makeShared());
-    pass_y.filter(pc);
-    pass_z.setInputCloud(pc.makeShared());
-    pass_z.filter(pc);
-
-    pc_nonground = pc;
     // pc_nonground is empty without ground segmentation
     pc_ground.header = pc.header;
     pc_nonground.header = pc.header;
@@ -521,32 +504,37 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
-
   publishAll(cloud->header.stamp);
 }
 
 void OctomapServer::insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
                                      const PCLPointCloud& pointCloud)
 {
+  std_srvs::Empty::Request req; 
+  std_srvs::Empty::Response resp;
+  resetSrv(req, resp);
   Eigen::Matrix4f sensorPose;
   pcl_ros::transformAsMatrix(sensorPoseTf, sensorPose);
-
   m_pointClouds.push_front(std::make_pair(pointCloud, sensorPose));
   if (m_pointClouds.size() > m_numScansInWindow)
+  {
     m_pointClouds.pop_back();
-
+  }
   Eigen::Matrix4f initial_pose_inv = m_pointClouds.front().second.inverse();
+  PCLPointCloud composed_cloud;
   for (int i = 0; i < m_pointClouds.size(); i++)
-    insertRadarScanToMap(m_pointClouds[i].first, initial_pose_inv * m_pointClouds[i].second);
+  {
+    PCLPointCloud tfCloud;
+    pcl::transformPointCloud(m_pointClouds[i].first, tfCloud, initial_pose_inv * m_pointClouds[i].second);
+    composed_cloud += tfCloud;
+  }
+  insertRadarScanToMap(composed_cloud, Eigen::Matrix4f::Identity());
 }
 
 
 void OctomapServer::insertRadarScanToMap(const PCLPointCloud& pointCloud,
                                          const Eigen::Matrix4f& sensorPose)
 {
-  PCLPointCloud sensorFramePointCloud;
-  pcl::transformPointCloud(pointCloud, sensorFramePointCloud, sensorPose);
-
   #ifdef COLOR_OCTOMAP_SERVER
   unsigned char* colors = new unsigned char[3];
   #endif
@@ -594,8 +582,8 @@ void OctomapServer::insertRadarScanToMap(const PCLPointCloud& pointCloud,
 
   // remove cells that contain targets from the free cell set 
   // and add them to the occupied cell set
-  for (PCLPointCloud::const_iterator it = sensorFramePointCloud.begin(); 
-       it != sensorFramePointCloud.end(); it++)
+  for (PCLPointCloud::const_iterator it = pointCloud.begin(); 
+       it != pointCloud.end(); it++)
   {
     point3d target(it->x, it->y, it->z);
     octomap::OcTreeKey targetKey;
@@ -1064,9 +1052,9 @@ bool OctomapServer::resetSrv(std_srvs::Empty::Request& req, std_srvs::Empty::Res
   m_gridmap.info.origin.position.y = 0.0;
 
   ROS_INFO("Cleared octomap");
-  publishAll(rostime);
+  //publishAll(rostime);
 
-  publishBinaryOctoMap(rostime);
+  //publishBinaryOctoMap(rostime);
   for (unsigned i= 0; i < occupiedNodesVis.markers.size(); ++i){
 
     occupiedNodesVis.markers[i].header.frame_id = m_worldFrameId;
@@ -1077,7 +1065,7 @@ bool OctomapServer::resetSrv(std_srvs::Empty::Request& req, std_srvs::Empty::Res
     occupiedNodesVis.markers[i].action = visualization_msgs::Marker::DELETE;
   }
 
-  m_markerPub.publish(occupiedNodesVis);
+  //m_markerPub.publish(occupiedNodesVis);
 
   visualization_msgs::MarkerArray freeNodesVis;
   freeNodesVis.markers.resize(m_treeDepth +1);
@@ -1091,7 +1079,7 @@ bool OctomapServer::resetSrv(std_srvs::Empty::Request& req, std_srvs::Empty::Res
     freeNodesVis.markers[i].type = visualization_msgs::Marker::CUBE_LIST;
     freeNodesVis.markers[i].action = visualization_msgs::Marker::DELETE;
   }
-  m_fmarkerPub.publish(freeNodesVis);
+  //m_fmarkerPub.publish(freeNodesVis);
 
   return true;
 }

@@ -155,9 +155,6 @@ protected:
   void insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
                                      const PCLPointCloud& pointCloud);
 
-  /// @brief Clears the current octomap and initializes a new one
-  void resetMap();
-
   /**
     * @brief filters multipath reflections from input radar point cloud
     * @param[in] cloud The raw pointcloud
