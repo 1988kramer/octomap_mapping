@@ -419,7 +419,11 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   pcl_ros::transformAsMatrix(sensorToWorldTf, sensorToWorld);
 
 
-  // set up filter for height range, also removes NANs:
+  // set up filter for height range, also removes NANs:fi
+  pcl::PassThrough<PCLPoint> pass;
+  pass.setFilterFieldName("z");
+  pass.setFilterLimits(m_pointcloudMinZ, m_pointcloudMaxZ);
+
   pcl::PassThrough<PCLPoint> pass_x;
   pass_x.setFilterFieldName("x");
   pass_x.setFilterLimits(m_pointcloudMinX, m_pointcloudMaxX);

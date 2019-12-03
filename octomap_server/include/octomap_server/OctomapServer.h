@@ -255,6 +255,10 @@ protected:
   unsigned m_treeDepth;
   unsigned m_maxTreeDepth;
 
+  double m_pointcloudMinX;
+  double m_pointcloudMaxX;
+  double m_pointcloudMinY;
+  double m_pointcloudMaxY;
   double m_pointcloudMinZ;
   double m_pointcloudMaxZ;
   double m_occupancyMinZ;
