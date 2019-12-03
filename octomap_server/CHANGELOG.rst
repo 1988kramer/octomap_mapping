@@ -2,6 +2,40 @@
 Changelog for package octomap_server
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.3 (2019-01-28)
+------------------
+* Fix compilation on Debian Stretch
+* Get rgb from point cloud iterator without byte shift
+* Contributors: Kentaro Wada, Wolfgang Merkt
+
+0.6.2 (2019-01-27)
+------------------
+* Update maintainer email (Wolfgang Merkt)
+* Change catkin_package `DEPENDS` to `OCTOMAP` to avoid CMake warning
+* Update maintainer email (Arming Hornung)
+* Update to use non deprecated pluginlib macro
+* Fixed memory leak of colors pointer if COLOR_OCTOMAP_SERVER defined
+* Contributors: Armin Hornung, Mikael Arguedas, Ronky, Wolfgang Merkt
+
+0.6.1 (2016-10-19)
+------------------
+* Fix for Colored Octomap: Use PCLPoint everywhere
+  Fixes compiler error when enabling the define
+  for color.
+* Fixed maxRange bug in OctomapServer.cpp for clearing
+* Adjust maintainer email
+* Contributors: Armin Hornung, Brandon Kinman, Felix Endres
+
+0.6.0 (2016-03-25)
+------------------
+* Add sensor model parameters to dynamic_reconfigure
+* Load map file from rosparam
+* Add x and y filter for pointcloud
+* Preparations for ColorOctomapServer (compile option, from source)
+* Fix iterator in OctomapServer
+* TrackingOctomapServer: Publish node center rather than index, prevent from publishing empty cloud
+* Contributors: Armin Hornung, Javier V. Gomez, JJeremie Deray, MasakiMurooka, Shohei Fujii, Wolfgang Merkt
+
 0.5.3 (2014-01-09)
 ------------------
 * Fixing PCL linking errors on build farm

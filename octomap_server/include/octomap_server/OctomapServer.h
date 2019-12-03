@@ -52,6 +52,8 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/kdtree/kdtree.h>
 
 
 #include <tf/transform_listener.h>
@@ -66,16 +68,27 @@
 #include <octomap/octomap.h>
 #include <octomap/OcTreeKey.h>
 
+//#define COLOR_OCTOMAP_SERVER // switch color here - easier maintenance, only maintain OctomapServer. Two targets are defined in the cmake, octomap_server_color and octomap_server. One has this defined, and the other doesn't
+
+#ifdef COLOR_OCTOMAP_SERVER
+#include <octomap/ColorOcTree.h>
+#endif
 
 namespace octomap_server {
-class OctomapServer{
+class OctomapServer {
 
 public:
+#ifdef COLOR_OCTOMAP_SERVER
+  typedef pcl::PointXYZRGB PCLPoint;
+  typedef pcl::PointCloud<pcl::PointXYZRGB> PCLPointCloud;
+  typedef octomap::ColorOcTree OcTreeT;
+#else
+  typedef pcl::PointXYZ PCLPoint;
   typedef pcl::PointCloud<pcl::PointXYZ> PCLPointCloud;
+  typedef octomap::OcTree OcTreeT;
+#endif
   typedef octomap_msgs::GetOctomap OctomapSrv;
   typedef octomap_msgs::BoundingBoxQuery BBXSrv;
-
-  typedef octomap::OcTree OcTreeT;
 
   OctomapServer(ros::NodeHandle private_nh_ = ros::NodeHandle("~"));
   virtual ~OctomapServer();
@@ -88,25 +101,25 @@ public:
   virtual bool openFile(const std::string& filename);
 
 protected:
-  inline static void updateMinKey(const octomap::OcTreeKey& in, octomap::OcTreeKey& min){
-    for (unsigned i=0; i<3; ++i)
+  inline static void updateMinKey(const octomap::OcTreeKey& in, octomap::OcTreeKey& min) {
+    for (unsigned i = 0; i < 3; ++i)
       min[i] = std::min(in[i], min[i]);
   };
-  
-  inline static void updateMaxKey(const octomap::OcTreeKey& in, octomap::OcTreeKey& max){
-    for (unsigned i=0; i<3; ++i)
+
+  inline static void updateMaxKey(const octomap::OcTreeKey& in, octomap::OcTreeKey& max) {
+    for (unsigned i = 0; i < 3; ++i)
       max[i] = std::max(in[i], max[i]);
   };
- 
+
   /// Test if key is within update area of map (2D, ignores height)
-  inline bool isInUpdateBBX(const octomap::OcTree::iterator& it) const{
+  inline bool isInUpdateBBX(const OcTreeT::iterator& it) const {
     // 2^(tree_depth-depth) voxels wide:
     unsigned voxelWidth = (1 << (m_maxTreeDepth - it.getDepth()));
     octomap::OcTreeKey key = it.getIndexKey(); // lower corner of voxel
-    return (key[0]+voxelWidth >= m_updateBBXMin[0]
-         && key[1]+voxelWidth >= m_updateBBXMin[1]
-         && key[0] <= m_updateBBXMax[0]
-         && key[1] <= m_updateBBXMax[1]);
+    return (key[0] + voxelWidth >= m_updateBBXMin[0]
+            && key[1] + voxelWidth >= m_updateBBXMin[1]
+            && key[0] <= m_updateBBXMax[0]
+            && key[1] <= m_updateBBXMax[1]);
   }
 
   void reconfigureCallback(octomap_server::OctomapServerConfig& config, uint32_t level);
@@ -123,6 +136,31 @@ protected:
   * @param nonground all other endpoints (clear up to occupied endpoint)
   */
   virtual void insertScan(const tf::Point& sensorOrigin, const PCLPointCloud& ground, const PCLPointCloud& nonground);
+
+  /**
+    * @brief update occupancy map with ground and nonground scans using the radar sensor model
+    * Input scans should be in the global map frame
+    *
+    * @param sensorPose The pose of the sensor in the global frame
+    * @param pointCloud Radar returns in the global frame
+    */
+  void insertRadarScanToMap(const PCLPointCloud& pointCloud, const Eigen::Matrix4f& sensorPose);
+
+  /**
+    * @brief Adds the most recent scan to map window and removes the oldest if necessary
+    * @param[in] sensorPoseTf The transform describing the sensor's estimated 
+    *                          pose in the world frame
+    * @param[in] pointCloud The point cloud in the sensor frame
+    */
+  void insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
+                                     const PCLPointCloud& pointCloud);
+
+  /**
+    * @brief filters multipath reflections from input radar point cloud
+    * @param[in] cloud The raw pointcloud
+    * @param[out] out_cloud filtered point cloud
+    */
+  void filterReflections(const PCLPointCloud& cloud, PCLPointCloud& out_cloud);
 
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
@@ -161,13 +199,13 @@ protected:
   /// updates the downprojected 2D map as either occupied or free
   virtual void update2DMap(const OcTreeT::iterator& it, bool occupied);
 
-  inline unsigned mapIdx(int i, int j) const{
-    return m_gridmap.info.width*j + i;
+  inline unsigned mapIdx(int i, int j) const {
+    return m_gridmap.info.width * j + i;
   }
 
-  inline unsigned mapIdx(const octomap::OcTreeKey& key) const{
-    return mapIdx((key[0] - m_paddedMinKey[0])/m_multires2DScale,
-        (key[1] - m_paddedMinKey[1])/m_multires2DScale);
+  inline unsigned mapIdx(const octomap::OcTreeKey& key) const {
+    return mapIdx((key[0] - m_paddedMinKey[0]) / m_multires2DScale,
+                  (key[1] - m_paddedMinKey[1]) / m_multires2DScale);
 
   }
 
@@ -179,11 +217,11 @@ protected:
 
   void adjustMapData(nav_msgs::OccupancyGrid& map, const nav_msgs::MapMetaData& oldMapInfo) const;
 
-  inline bool mapChanged(const nav_msgs::MapMetaData& oldMapInfo, const nav_msgs::MapMetaData& newMapInfo){
+  inline bool mapChanged(const nav_msgs::MapMetaData& oldMapInfo, const nav_msgs::MapMetaData& newMapInfo) {
     return (    oldMapInfo.height != newMapInfo.height
-             || oldMapInfo.width !=newMapInfo.width
-             || oldMapInfo.origin.position.x != newMapInfo.origin.position.x
-             || oldMapInfo.origin.position.y != newMapInfo.origin.position.y);
+                || oldMapInfo.width != newMapInfo.width
+                || oldMapInfo.origin.position.x != newMapInfo.origin.position.x
+                || oldMapInfo.origin.position.y != newMapInfo.origin.position.y);
   }
 
   static std_msgs::ColorRGBA heightMapColor(double h);
@@ -193,14 +231,16 @@ protected:
   tf::MessageFilter<sensor_msgs::PointCloud2>* m_tfPointCloudSub;
   ros::ServiceServer m_octomapBinaryService, m_octomapFullService, m_clearBBXService, m_resetService;
   tf::TransformListener m_tfListener;
+  boost::recursive_mutex m_config_mutex;
   dynamic_reconfigure::Server<OctomapServerConfig> m_reconfigureServer;
 
-  octomap::OcTree* m_octree;
+  OcTreeT* m_octree;
   octomap::KeyRay m_keyRay;  // temp storage for ray casting
   octomap::OcTreeKey m_updateBBXMin;
   octomap::OcTreeKey m_updateBBXMax;
 
   double m_maxRange;
+  double m_minRange;
   std::string m_worldFrameId; // the map frame
   std::string m_baseFrameId; // base of the robot for ground plane filtering
   bool m_useHeightMap;
@@ -214,10 +254,6 @@ protected:
   double m_res;
   unsigned m_treeDepth;
   unsigned m_maxTreeDepth;
-  double m_probHit;
-  double m_probMiss;
-  double m_thresMin;
-  double m_thresMax;
 
   double m_pointcloudMinZ;
   double m_pointcloudMaxZ;
@@ -225,6 +261,11 @@ protected:
   double m_occupancyMaxZ;
   double m_minSizeX;
   double m_minSizeY;
+  double m_probHit;
+  double m_probMiss;
+  double m_thresMin;
+  double m_thresMax;
+  double m_binWidth;
   bool m_filterSpeckles;
 
   bool m_filterGroundPlane;
@@ -232,7 +273,14 @@ protected:
   double m_groundFilterAngle;
   double m_groundFilterPlaneDistance;
 
+  bool m_useBeamSensorModel;
+
+  double m_azimuthFov;
+  double m_elevationFov;
+
   bool m_compressMap;
+
+  bool m_initConfig;
 
   // downprojected 2D map:
   bool m_incrementalUpdate;
@@ -242,6 +290,11 @@ protected:
   octomap::OcTreeKey m_paddedMinKey;
   unsigned m_multires2DScale;
   bool m_projectCompleteMap;
+  bool m_useColoredMap;
+
+  std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
+  std::deque<std::pair<PCLPointCloud,Eigen::Matrix4f> > m_pointClouds;
+  int m_numScansInWindow;
 };
 }
 
