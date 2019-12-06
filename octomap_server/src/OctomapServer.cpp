@@ -252,7 +252,10 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
   std::vector<pcl::PointIndices> cluster_indices;
   pcl::EuclideanClusterExtraction<PCLPoint> ec;
   ec.setClusterTolerance(0.2);
-  ec.setMinClusterSize(3);
+  if (m_useLocalMapping)
+    ec.setMinClusterSize(3);
+  else
+    ec.setMinClusterSize(1);
   ec.setMaxClusterSize(20);
   ec.setSearchMethod(tree);
   ec.setInputCloud(cloudPtr);
