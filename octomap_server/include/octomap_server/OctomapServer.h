@@ -278,6 +278,7 @@ protected:
   double m_groundFilterPlaneDistance;
 
   bool m_useBeamSensorModel;
+  bool m_useLocalMapping;
 
   double m_azimuthFov;
   double m_elevationFov;

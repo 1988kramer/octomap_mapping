@@ -73,6 +73,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_incrementalUpdate(false),
   m_initConfig(true),
   m_useBeamSensorModel(true),
+  m_useLocalMapping(false),
   m_azimuthFov(1.039),
   m_elevationFov(0.785),
   m_numScansInWindow(10),
@@ -102,6 +103,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("ground_filter/plane_distance", m_groundFilterPlaneDistance, m_groundFilterPlaneDistance);
 
   private_nh.param("use_beam_model", m_useBeamSensorModel, m_useBeamSensorModel);
+  private_nh.param("local_mapping", m_useLocalMapping, m_useLocalMapping);
   private_nh.param("sensor_model/max_range", m_maxRange, m_maxRange);
   private_nh.param("sensor_model/min_range", m_minRange, m_minRange);
   private_nh.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
@@ -497,7 +499,17 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   }
   else
   {
-    insertRadarScanToDeque(sensorToWorldTf, pc_nonground);
+    if (m_useLocalMapping)
+    {
+      insertRadarScanToDeque(sensorToWorldTf, pc_nonground);
+    }
+    else
+    {
+      Eigen::Matrix4f sensor_pose;
+      pcl_ros::transformAsMatrix(sensorToWorldTf, sensor_pose);
+      pcl::transformPointCloud(pc_nonground, pc_nonground, sensor_pose);
+      insertRadarScanToMap(pc_nonground, sensor_pose);
+    }
   }
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
@@ -918,7 +930,7 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     for (unsigned i= 0; i < occupiedNodesVis.markers.size(); ++i){
       double size = m_octree->getNodeSize(i);
 
-      if (m_useBeamSensorModel)
+      if (m_useBeamSensorModel && m_useLocalMapping)
         occupiedNodesVis.markers[i].header.frame_id = m_worldFrameId;
       else
         occupiedNodesVis.markers[i].header.frame_id = m_baseFrameId;
