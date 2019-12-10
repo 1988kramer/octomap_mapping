@@ -255,7 +255,7 @@ void OctomapServer::filterReflections(const PCLPointCloud& cloud,
   if (m_useLocalMapping)
     ec.setMinClusterSize(3);
   else
-    ec.setMinClusterSize(1);
+    ec.setMinClusterSize(2);
   ec.setMaxClusterSize(20);
   ec.setSearchMethod(tree);
   ec.setInputCloud(cloudPtr);
@@ -843,7 +843,7 @@ void OctomapServer::publishAll(const ros::Time& rostime){
 #endif
 
         // Ignore speckles in the map:
-        if (m_filterSpeckles && (it.getDepth() == m_treeDepth +1) && isSpeckleNode(it.getKey())){
+        if (m_filterSpeckles && (it.getDepth() == m_treeDepth) && isSpeckleNode(it.getKey())){
           ROS_DEBUG("Ignoring single speckle at (%f,%f,%f)", x, y, z);
           continue;
         } // else: current octree node is no speckle, send it out
@@ -1414,22 +1414,21 @@ void OctomapServer::update2DMap(const OcTreeT::iterator& it, bool occupied){
 
 bool OctomapServer::isSpeckleNode(const OcTreeKey&nKey) const {
   OcTreeKey key;
-  bool neighborFound = false;
-  for (key[2] = nKey[2] - 1; !neighborFound && key[2] <= nKey[2] + 1; ++key[2]){
-    for (key[1] = nKey[1] - 1; !neighborFound && key[1] <= nKey[1] + 1; ++key[1]){
-      for (key[0] = nKey[0] - 1; !neighborFound && key[0] <= nKey[0] + 1; ++key[0]){
+  for (key[2] = nKey[2] - 1; key[2] <= nKey[2] + 1; ++key[2]){
+    for (key[1] = nKey[1] - 1; key[1] <= nKey[1] + 1; ++key[1]){
+      for (key[0] = nKey[0] - 1; key[0] <= nKey[0] + 1; ++key[0]){
         if (key != nKey){
           OcTreeNode* node = m_octree->search(key);
           if (node && m_octree->isNodeOccupied(node)){
             // we have a neighbor => break!
-            neighborFound = true;
+            return false;
           }
         }
       }
     }
   }
 
-  return neighborFound;
+  return true;
 }
 
 void OctomapServer::reconfigureCallback(octomap_server::OctomapServerConfig& config, uint32_t level){
