@@ -517,6 +517,9 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
     }
   }
 
+  if (m_useSORFilter)
+    applySORFilter();
+
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
   publishAll(cloud->header.stamp);
@@ -785,7 +788,6 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf,
 void OctomapServer::applySORFilter()
 {
   // get point centers for occupied nodes
-  ROS_ERROR_STREAM("getting map points");
   pcl::PointCloud<PCLPoint>::Ptr pcl_cloud(new pcl::PointCloud<PCLPoint>);
   for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth);
     it != m_octree->end(); it++)
@@ -799,7 +801,7 @@ void OctomapServer::applySORFilter()
       pcl_cloud->push_back(point);
     }
   }
-  ROS_ERROR_STREAM("performing outlier filtering");
+  
   // perform statistical outlier filtering
   pcl::PointCloud<PCLPoint>::Ptr cloud_filtered(new pcl::PointCloud<PCLPoint>);
   pcl::StatisticalOutlierRemoval<PCLPoint> sor;
@@ -807,19 +809,18 @@ void OctomapServer::applySORFilter()
   sor.setMeanK(20);
   sor.setStddevMulThresh(0.20);
   sor.filter(*cloud_filtered);
-  ROS_ERROR_STREAM("found " << cloud_filtered->size() << " inliers out of " << pcl_cloud->size());
-  ROS_ERROR_STREAM("getting outliers");
+  ROS_ERROR_STREAM("found " << cloud_filtered->size() << " inliers");
+  
   // get outlier points
   pcl::PointCloud<PCLPoint>::Ptr cloud_outliers(new pcl::PointCloud<PCLPoint>);
   pcl::search::KdTree<PCLPoint>::Ptr tree(new pcl::search::KdTree<PCLPoint>());
-  tree->setInputCloud(pcl_cloud);
   pcl::SegmentDifferences<PCLPoint> seg;
   seg.setTargetCloud(cloud_filtered);
+  seg.setInputCloud(pcl_cloud);
   seg.setDistanceThreshold(0.01);
   seg.setSearchMethod(tree);
-  ROS_ERROR_STREAM("segmenting");
-  seg.segment(*cloud_outliers);
-  ROS_ERROR_STREAM("setting outliers as unoccupied");
+  seg.segment(*(cloud_outliers.get()));
+  
   // set outlier points to unoccupied
   for (pcl::PointCloud<PCLPoint>::iterator it = cloud_outliers->begin();
     it != cloud_outliers->end(); it++)
@@ -830,8 +831,16 @@ void OctomapServer::applySORFilter()
       m_octree->setNodeValue(key, m_thresMin);
     else
       ROS_ERROR_STREAM("could not generate key for endpoint");
-
   }
+
+  int occupied_count = 0;
+  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth);
+    it != m_octree->end(); it++)
+  {
+    if (m_octree->isNodeOccupied(*it))
+      occupied_count += 1;
+  }
+  ROS_ERROR_STREAM("found " << occupied_count << " occupied cells");
 }
 
 
@@ -843,9 +852,6 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     ROS_WARN("Nothing to publish, octree is empty");
     return;
   }
-
-  if (m_useSORFilter)
-    applySORFilter();
 
   bool publishFreeMarkerArray = m_publishFreeSpace && (m_latchedTopics || m_fmarkerPub.getNumSubscribers() > 0);
   bool publishMarkerArray = (m_latchedTopics || m_markerPub.getNumSubscribers() > 0);
