@@ -54,6 +54,8 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/kdtree/kdtree.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/segmentation/segment_differences.h>
 
 
 #include <tf/transform_listener.h>
@@ -161,6 +163,11 @@ protected:
     * @param[out] out_cloud filtered point cloud
     */
   void filterReflections(const PCLPointCloud& cloud, PCLPointCloud& out_cloud);
+
+  /**
+    * @ brief applies statistical outlier rejection to octomap
+    */
+  void applySORFilter();
 
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
@@ -279,6 +286,7 @@ protected:
 
   bool m_useBeamSensorModel;
   bool m_useLocalMapping;
+  bool m_useSORFilter;
 
   double m_azimuthFov;
   double m_elevationFov;
