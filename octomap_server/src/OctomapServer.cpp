@@ -1529,7 +1529,7 @@ bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const
 {
   std::vector<OcTreeKey> occupied_keys;
   occupied_keys.push_back(nKey);
-  size_t speckle_size = 4;
+  size_t speckle_size = 5;
   int key_idx = 0;
   while (key_idx < occupied_keys.size() && occupied_keys.size() < speckle_size)
   {
