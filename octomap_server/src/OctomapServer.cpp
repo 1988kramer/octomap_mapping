@@ -518,7 +518,7 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   }
 
   if (m_useSORFilter)
-    applySORFilter();
+    applyClusterFilter();
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
@@ -783,6 +783,59 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf,
     colors = NULL;
   }
 #endif
+}
+
+void OctomapServer::applyClusterFilter()
+{
+  // detect point clusters
+  pcl::PointCloud<PCLPoint>::Ptr pcl_cloud(new pcl::PointCloud<PCLPoint>);
+  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth);
+    it != m_octree->end(); it++)
+  {
+    if (m_octree->isNodeOccupied(*it))
+    {
+      PCLPoint point;
+      point.x = it.getX();
+      point.y = it.getY();
+      point.z = it.getZ();
+      pcl_cloud->push_back(point);
+    }
+  }
+
+  pcl::search::KdTree<PCLPoint>::Ptr tree(new pcl::search::KdTree<PCLPoint>());
+  tree->setInputCloud(pcl_cloud);
+  std::vector<pcl::PointIndices> cluster_indices;
+  pcl::EuclideanClusterExtraction<PCLPoint> ec;
+  ec.setClusterTolerance(0.3);
+  ec.setMinClusterSize(3);
+  ec.setMaxClusterSize(250000);
+  ec.setSearchMethod(tree);
+  ec.setInputCloud(pcl_cloud);
+  ec.extract(cluster_indices);
+
+  std::vector<bool> is_inlier;
+  is_inlier.resize(pcl_cloud->size(),false);
+  for (std::vector<pcl::PointIndices>::iterator it = cluster_indices.begin();
+    it != cluster_indices.end(); it++)
+  {
+    std::vector<int> indices = it->indices;
+    for (std::vector<int>::iterator pit = indices.begin(); 
+      pit != indices.end(); pit++)
+      is_inlier[*pit] = true;
+  }
+  double thresMin = m_octree->getClampingThresMin();
+  for (size_t i = 0; i < pcl_cloud->size(); i++)
+  {
+    if (!is_inlier[i])
+    {
+      point3d pt(pcl_cloud->at(i).x, pcl_cloud->at(i).y, pcl_cloud->at(i).z);
+      OcTreeKey key;
+      if (m_octree->coordToKeyChecked(pt, key))
+        m_octree->setNodeValue(key, octomap::logodds(thresMin));
+      else
+        ROS_ERROR_STREAM("could not generate key for endpoint");
+    }
+  }
 }
 
 void OctomapServer::applySORFilter()
@@ -1474,21 +1527,37 @@ void OctomapServer::update2DMap(const OcTreeT::iterator& it, bool occupied){
 
 bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const 
 {
-  OcTreeKey key;
-  for (key[2] = nKey[2] - 1; key[2] <= nKey[2] + 1; ++key[2]){
-    for (key[1] = nKey[1] - 1; key[1] <= nKey[1] + 1; ++key[1]){
-      for (key[0] = nKey[0] - 1; key[0] <= nKey[0] + 1; ++key[0]){
-        if (key != nKey){
-          OcTreeNode* node = m_octree->search(key);
-          if (node && m_octree->isNodeOccupied(node)){
-            // we have a neighbor => break!
-            return false;
+  std::vector<OcTreeKey> occupied_keys;
+  occupied_keys.push_back(nKey);
+  size_t speckle_size = 4;
+  int key_idx = 0;
+  while (key_idx < occupied_keys.size() && occupied_keys.size() < speckle_size)
+  {
+    OcTreeKey nKey = occupied_keys[key_idx];
+    OcTreeKey key = nKey;
+    for (key[2] = nKey[2] - 1; key[2] <= nKey[2] + 1; ++key[2])
+    {
+      for (key[1] = nKey[1] - 1; key[1] <= nKey[1] + 1; ++key[1])
+      {
+        for (key[0] = nKey[0] - 1; key[0] <= nKey[0] + 1; ++key[0])
+        {
+          std::vector<OcTreeKey>::iterator it = std::find(occupied_keys.begin(),
+                                                            occupied_keys.end(),
+                                                            key);
+          if (it == occupied_keys.end())
+          {
+            OcTreeNode* node = m_octree->search(key);
+            if (node && m_octree->isNodeOccupied(node)){
+              // we have a neighbor => break!
+              occupied_keys.push_back(key);
+            }
           }
         }
       }
     }
+    key_idx++;
   }
-  return true;
+  return occupied_keys.size() < speckle_size;
 }
 
 void OctomapServer::reconfigureCallback(octomap_server::OctomapServerConfig& config, uint32_t level){

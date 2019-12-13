@@ -169,6 +169,8 @@ protected:
     */
   void applySORFilter();
 
+  void applyClusterFilter();
+
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
 
