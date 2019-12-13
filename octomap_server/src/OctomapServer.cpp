@@ -1523,8 +1523,6 @@ void OctomapServer::update2DMap(const OcTreeT::iterator& it, bool occupied){
   }
 }
 
-
-
 bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const 
 {
   std::vector<OcTreeKey> occupied_keys;
@@ -1547,10 +1545,8 @@ bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const
           if (it == occupied_keys.end())
           {
             OcTreeNode* node = m_octree->search(key);
-            if (node && m_octree->isNodeOccupied(node)){
-              // we have a neighbor => break!
+            if (node && m_octree->isNodeOccupied(node))
               occupied_keys.push_back(key);
-            }
           }
         }
       }
