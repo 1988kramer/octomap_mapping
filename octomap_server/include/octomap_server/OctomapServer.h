@@ -292,6 +292,7 @@ protected:
 
   double m_azimuthFov;
   double m_elevationFov;
+  int m_speckle_size;
 
   bool m_compressMap;
 

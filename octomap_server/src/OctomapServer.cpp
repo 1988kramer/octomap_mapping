@@ -78,7 +78,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_elevationFov(0.785),
   m_numScansInWindow(10),
   m_binWidth(0.070),
-  m_useSORFilter(false)
+  m_useSORFilter(false),
+  m_speckle_size(1)
 {
   ros::NodeHandle private_nh(private_nh_);
   private_nh.param("frame_id", m_worldFrameId, m_worldFrameId);
@@ -112,6 +113,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("num_scans_in_window", m_numScansInWindow, m_numScansInWindow);
   private_nh.param("bin_width", m_binWidth, m_binWidth);
   private_nh.param("use_sor_filter", m_useSORFilter, m_useSORFilter);
+  private_nh.param("speckle_size", m_speckle_size, m_speckle_size);
 
   private_nh.param("resolution", m_res, m_res);
   private_nh.param("sensor_model/hit", m_probHit, 0.7);
@@ -1527,9 +1529,8 @@ bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const
 {
   std::vector<OcTreeKey> occupied_keys;
   occupied_keys.push_back(nKey);
-  size_t speckle_size = 5;
   int key_idx = 0;
-  while (key_idx < occupied_keys.size() && occupied_keys.size() < speckle_size)
+  while (key_idx < occupied_keys.size() && occupied_keys.size() < m_speckle_size)
   {
     OcTreeKey nKey = occupied_keys[key_idx];
     OcTreeKey key = nKey;
@@ -1553,7 +1554,7 @@ bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const
     }
     key_idx++;
   }
-  return occupied_keys.size() < speckle_size;
+  return occupied_keys.size() < m_speckle_size;
 }
 
 void OctomapServer::reconfigureCallback(octomap_server::OctomapServerConfig& config, uint32_t level){
