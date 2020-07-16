@@ -112,7 +112,6 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
   private_nh.param("num_scans_in_window", m_numScansInWindow, m_numScansInWindow);
   private_nh.param("bin_width", m_binWidth, m_binWidth);
-  private_nh.param("use_sor_filter", m_useSORFilter, m_useSORFilter);
   private_nh.param("speckle_size", m_speckle_size, m_speckle_size);
 
   private_nh.param("resolution", m_res, m_res);
@@ -519,9 +518,6 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
     }
   }
 
-  if (m_useSORFilter)
-    applyClusterFilter();
-
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
   publishAll(cloud->header.stamp);
@@ -551,18 +547,9 @@ void OctomapServer::insertRadarScanToDeque(const tf::StampedTransform& sensorPos
   insertRadarScanToMap(composed_cloud, Eigen::Matrix4f::Identity());
 }
 
-
-void OctomapServer::insertRadarScanToMap(const PCLPointCloud& pointCloud,
-                                         const Eigen::Matrix4f& sensorPose)
+void OctomapServer::getCellsInFov(const Eigen::Matrix4f& sensorPose,
+                                  KeySet& cells)
 {
-  #ifdef COLOR_OCTOMAP_SERVER
-  unsigned char* colors = new unsigned char[3];
-  #endif
-
-  KeySet free_cells, occupied_cells;
-
-  // get all cells within the sensor's field of view
-  // there really must be a more efficient way to do this
   for (int i = 0; i < m_radarRays.size(); i++)
   {
     for (int j = 0; j < m_radarRays[i].size(); j++)
@@ -599,7 +586,112 @@ void OctomapServer::insertRadarScanToMap(const PCLPointCloud& pointCloud,
       }
     }
   }
+}
 
+float OctomapServer::barycentricInterpolate(const std::vector<float> &intensities,
+                                            const std::vector<float> &inverse_dists)
+{
+  float sum_inverse_dists = 0.0;
+  for (int i = 0; i < inverse_dists.size(); i++)
+    sum_inverse_dists += inverse_dists[i];
+
+  float out_intensity = 0.0;
+  for (int i = 0; i < intensities.size(); i++)
+    out_intensity += intensities[i] * inverse_dists[i] / sum_inverse_dists;
+
+  return out_intensity;
+}
+
+
+void OctomapServer::insertRadarImageToMap(const PCLPointCloud& pointcloud,
+                                          const Eigen::Matrix4f& sensorPose)
+{
+  // Create KD tree from the radar pointcloud
+  //pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr(pointcloud);
+  pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr kdtree;
+  kdtree.setInputCloud(&pointcloud);
+
+  KeySet cell_keys;
+  getCellsInFov(sensor_pose, cell_keys);
+
+  for (KeySet::iterator it = cell_keys.begin();
+       it != cell_keys.end(); it++)
+  {
+    point3d cell_coord = keyToCoord(*it);
+
+    // Get eight surrounding points in radar image
+    int K=8;
+    std::vector<int> indices(K);
+    std::vector<float> sqr_distances(K);
+    kdtree->nearestKSearch(cell_coord, K, indices, sqr_distances);
+
+
+    // determine if resultant points form box around given map cell
+    // center the 8 points and check the positivity/negativity of each coordinate
+    std::vector<bool> corners(K,false);
+    std::vector<float> inverse_dists(K);
+    std::vector<float> intensities(K);
+    for (int i = 0; i < indices.size(); i++)
+    {
+      pcl::PointXYZI local_point = (pointcloud[indices[i]].x - cell_coord.x,
+                                 pointcloud[indices[i]].y - cell_coord.y,
+                                 pointcloud[indices[i]].z - cell_coord.z,
+                                 pointcloud[indices[i]].intensity);
+      unsigned char c = 0;
+      for (int j = 0; j < 3; j++)
+      {
+        if local_point[j] > 0.0
+          c |= 1 << j;
+      }
+      corners[int(c)] = true;
+      intensities[int(c)] = local_point.intensity;
+      inverse_dists[int(c)] = 1.0 / sqrt(sqr_distances[i]);
+    }
+    if (std::find(corners.begin(), corners.end(), false) == corners.end())
+    {
+      float intensity = barycentricInterpolate(local_points, inverse_dists);
+      
+      // convert interpolated intensity to an occupancy probability update
+      float odds_update = intensity * (m_probHit - m_probMiss) + m_probMiss;
+      float log_odds_update = log(odds_update / (1.0 - odds_update));
+      m_octree->updateNode(*it,log_odds_update);
+    }
+  }
+
+  octomap::point3d minPt, maxPt;
+  ROS_DEBUG_STREAM("Bounding box keys (before): "
+    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
+    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
+  minPt = m_octree->keyToCoord(m_updateBBXMin);
+  maxPt = m_octree->keyToCoord(m_updateBBXMax);
+  ROS_DEBUG_STREAM("Bounding box keys (after): "
+    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
+    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
+
+  if (m_compressMap)
+    m_octree->prune();
+
+  #ifdef COLOR_OCTOMAP_SERVER
+  if (colors)
+  {
+    delete[] colors;
+    colors = NULL;
+  }
+  #endif
+}
+
+
+void OctomapServer::insertRadarScanToMap(const PCLPointCloud& pointCloud,
+                                         const Eigen::Matrix4f& sensorPose)
+{
+  #ifdef COLOR_OCTOMAP_SERVER
+  unsigned char* colors = new unsigned char[3];
+  #endif
+
+  KeySet free_cells, occupied_cells;
+
+  getCellsInFov(sensorPose, free_cells);
+  
   // remove cells that contain targets from the free cell set 
   // and add them to the occupied cell set
   for (PCLPointCloud::const_iterator it = pointCloud.begin(); 
@@ -786,118 +878,6 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf,
   }
 #endif
 }
-
-void OctomapServer::applyClusterFilter()
-{
-  // detect point clusters
-  pcl::PointCloud<PCLPoint>::Ptr pcl_cloud(new pcl::PointCloud<PCLPoint>);
-  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth);
-    it != m_octree->end(); it++)
-  {
-    if (m_octree->isNodeOccupied(*it))
-    {
-      PCLPoint point;
-      point.x = it.getX();
-      point.y = it.getY();
-      point.z = it.getZ();
-      pcl_cloud->push_back(point);
-    }
-  }
-
-  pcl::search::KdTree<PCLPoint>::Ptr tree(new pcl::search::KdTree<PCLPoint>());
-  tree->setInputCloud(pcl_cloud);
-  std::vector<pcl::PointIndices> cluster_indices;
-  pcl::EuclideanClusterExtraction<PCLPoint> ec;
-  ec.setClusterTolerance(0.3);
-  ec.setMinClusterSize(3);
-  ec.setMaxClusterSize(250000);
-  ec.setSearchMethod(tree);
-  ec.setInputCloud(pcl_cloud);
-  ec.extract(cluster_indices);
-
-  std::vector<bool> is_inlier;
-  is_inlier.resize(pcl_cloud->size(),false);
-  for (std::vector<pcl::PointIndices>::iterator it = cluster_indices.begin();
-    it != cluster_indices.end(); it++)
-  {
-    std::vector<int> indices = it->indices;
-    for (std::vector<int>::iterator pit = indices.begin(); 
-      pit != indices.end(); pit++)
-      is_inlier[*pit] = true;
-  }
-  double thresMin = m_octree->getClampingThresMin();
-  for (size_t i = 0; i < pcl_cloud->size(); i++)
-  {
-    if (!is_inlier[i])
-    {
-      point3d pt(pcl_cloud->at(i).x, pcl_cloud->at(i).y, pcl_cloud->at(i).z);
-      OcTreeKey key;
-      if (m_octree->coordToKeyChecked(pt, key))
-        m_octree->setNodeValue(key, octomap::logodds(thresMin));
-      else
-        ROS_ERROR_STREAM("could not generate key for endpoint");
-    }
-  }
-}
-
-void OctomapServer::applySORFilter()
-{
-  // get point centers for occupied nodes
-  pcl::PointCloud<PCLPoint>::Ptr pcl_cloud(new pcl::PointCloud<PCLPoint>);
-  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth);
-    it != m_octree->end(); it++)
-  {
-    if (m_octree->isNodeOccupied(*it))
-    {
-      PCLPoint point;
-      point.x = it.getX();
-      point.y = it.getY();
-      point.z = it.getZ();
-      pcl_cloud->push_back(point);
-    }
-  }
-  
-  // perform statistical outlier filtering
-  pcl::PointCloud<PCLPoint>::Ptr cloud_filtered(new pcl::PointCloud<PCLPoint>);
-  pcl::StatisticalOutlierRemoval<PCLPoint> sor;
-  sor.setInputCloud(pcl_cloud);
-  sor.setMeanK(0.5);
-  sor.setStddevMulThresh(0.20);
-  sor.filter(*cloud_filtered);
-  
-  // get outlier points
-  pcl::PointCloud<PCLPoint>::Ptr cloud_outliers(new pcl::PointCloud<PCLPoint>);
-  pcl::search::KdTree<PCLPoint>::Ptr tree(new pcl::search::KdTree<PCLPoint>());
-  pcl::SegmentDifferences<PCLPoint> seg;
-  seg.setTargetCloud(cloud_filtered);
-  seg.setInputCloud(pcl_cloud);
-  seg.setDistanceThreshold(0.01);
-  seg.setSearchMethod(tree);
-  seg.segment(*(cloud_outliers.get()));
-  
-  // set outlier points to unoccupied
-  double thresMin = m_octree->getClampingThresMin();
-  for (pcl::PointCloud<PCLPoint>::iterator it = cloud_outliers->begin();
-    it != cloud_outliers->end(); it++)
-  {
-    point3d pt(it->x, it->y, it->z);
-    OcTreeKey key;
-    if (m_octree->coordToKeyChecked(pt, key))
-      m_octree->setNodeValue(key, octomap::logodds(thresMin));
-    else
-      ROS_ERROR_STREAM("could not generate key for endpoint");
-  }
-  /*
-  int occupied_count = 0;
-  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth);
-    it != m_octree->end(); it++)
-  {
-    if (m_octree->isNodeOccupied(*it))
-      occupied_count += 1;
-  }
-  */
-}
-
 
 void OctomapServer::publishAll(const ros::Time& rostime){
   ros::WallTime startTime = ros::WallTime::now();
