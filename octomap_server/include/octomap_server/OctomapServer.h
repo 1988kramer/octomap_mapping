@@ -146,14 +146,14 @@ protected:
     * @param sensorPose The pose of the sensor in the global frame
     * @param pointCloud Radar returns in the global frame
     */
-  void insertRadarScanToMap(const PCLPointCloud& pointCloud, const Eigen::Matrix4f& sensorPose);
+  void insertRadarScanToMap(const pcl::PointCloud<pcl::PointXYZI>& pointCloud, const Eigen::Matrix4f& sensorPose);
 
   /**
     * @brief update opccupancy map with a dense radar image in polar coordinates
     * @param msg The dense pointcloud representing the radar image in the global frame
     * @param sensorPose The pose of the radar sensor in the global frame
     */
-  void insertRadarImageToMap(const PCLPointCloud& pointcloud, 
+  void insertRadarImageToMap(const pcl::PointCloud<pcl::PointXYZI>& pointcloud, 
                              const Eigen::Matrix4f& sensorPose);
 
   /**
@@ -172,7 +172,7 @@ protected:
     * @param[in] the sensor's current pose
     * @param[out] the set of cell keys within the sensor's field of view
     */
-  void getCellsInFov(const Eigen::Matrix4f& sensorPose, KeySet& cells);
+  void getCellsInFov(const Eigen::Matrix4f& sensorPose, octomap::KeySet& cells);
 
   /**
     * @brief Adds the most recent scan to map window and removes the oldest if necessary
@@ -181,14 +181,15 @@ protected:
     * @param[in] pointCloud The point cloud in the sensor frame
     */
   void insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
-                                     const PCLPointCloud& pointCloud);
+                              const pcl::PointCloud<pcl::PointXYZI>& pointCloud);
 
   /**
     * @brief filters multipath reflections from input radar point cloud
     * @param[in] cloud The raw pointcloud
     * @param[out] out_cloud filtered point cloud
     */
-  void filterReflections(const PCLPointCloud& cloud, PCLPointCloud& out_cloud);
+  void filterReflections(const pcl::PointCloud<pcl::PointXYZI>& cloud, 
+                         pcl::PointCloud<pcl::PointXYZI>& out_cloud);
 
   /**
     * @ brief applies statistical outlier rejection to octomap
@@ -312,7 +313,7 @@ protected:
   double m_groundFilterAngle;
   double m_groundFilterPlaneDistance;
 
-  bool m_useBeamSensorModel;
+  std::string m_sensorModel;
   bool m_useLocalMapping;
   bool m_useSORFilter;
 
@@ -335,7 +336,7 @@ protected:
   bool m_useColoredMap;
 
   std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
-  std::deque<std::pair<PCLPointCloud,Eigen::Matrix4f> > m_pointClouds;
+  std::deque<std::pair<pcl::PointCloud<pcl::PointXYZI>,Eigen::Matrix4f> > m_pointClouds;
   int m_numScansInWindow;
 };
 }
