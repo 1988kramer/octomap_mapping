@@ -74,8 +74,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_initConfig(true),
   m_sensorModel("beam"),
   m_useLocalMapping(false),
-  m_azimuthFov(1.039),
-  m_elevationFov(0.785),
+  m_azimuthFov(M_PI/4.0),
+  m_elevationFov(M_PI/8.0),
   m_numScansInWindow(10),
   m_binWidth(0.070),
   m_useSORFilter(false),
@@ -104,7 +104,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   // distance of found plane from z=0 to be detected as ground (e.g. to exclude tables)
   private_nh.param("ground_filter/plane_distance", m_groundFilterPlaneDistance, m_groundFilterPlaneDistance);
 
-  private_nh.param("sensor_model", m_sensorModel, m_sensorModel);
+  private_nh.param("sensor_model/model", m_sensorModel, m_sensorModel);
 
   if (!(m_sensorModel.compare("beam") == 0
     || m_sensorModel.compare("radar_point") == 0
@@ -631,55 +631,68 @@ void OctomapServer::insertRadarImageToMap(const pcl::PointCloud<pcl::PointXYZI>&
 {
   // Create KD tree from the radar pointcloud
   //pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr(pointcloud);
-  pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr kdtree;
-  pcl::PointCloud<pcl::PointXYZI>::ConstPtr cloud_ptr(&pointcloud);
-  kdtree->setInputCloud(cloud_ptr);
-
+  pcl::KdTreeFLANN<pcl::PointXYZI> kdtree;
+  pcl::PointCloud<pcl::PointXYZI>::ConstPtr cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>(pointcloud));
+  //ROS_ERROR_STREAM("setting input cloud");
+  kdtree.setInputCloud(cloud_ptr, NULL);
+  //ROS_ERROR_STREAM("getting cells in fov");
   KeySet cell_keys;
   getCellsInFov(sensorPose, cell_keys);
-
+  //ROS_ERROR_STREAM("updating cell values");
+  int cells_updated = 0;
   for (KeySet::iterator it = cell_keys.begin();
        it != cell_keys.end(); it++)
   {
+    
+    //ROS_ERROR_STREAM("getting query point");
     point3d cell_coord = m_octree->keyToCoord(*it);
     pcl::PointXYZI query_point;
     query_point.x = cell_coord.x();
     query_point.y = cell_coord.y();
     query_point.z = cell_coord.z();
     query_point.intensity = 0.0;
-
+    //ROS_ERROR_STREAM("finding surrounding radar image voxels");
     // Get eight surrounding points in radar image
     int K=8;
     std::vector<int> indices(K);
     std::vector<float> sqr_distances(K);
-    kdtree->nearestKSearch(query_point, K, indices, sqr_distances);
+    kdtree.nearestKSearch(query_point, K, indices, sqr_distances);
 
 
     // determine if resultant points form box around given map cell
     // center the 8 points and check the positivity/negativity of each coordinate
+    //ROS_ERROR_STREAM("checking if voxels surround query point");
     std::vector<bool> corners(K,false);
     std::vector<float> inverse_dists(K);
     std::vector<float> intensities(K);
     for (int i = 0; i < indices.size(); i++)
     {
+      /*
+      //ROS_ERROR_STREAM("centering local point");
       pcl::PointXYZI local_point;
       local_point.x = pointcloud[indices[i]].x - query_point.x;
       local_point.y = pointcloud[indices[i]].y - query_point.y;
       local_point.z = pointcloud[indices[i]].z - query_point.z;
       local_point.intensity = pointcloud[indices[i]].intensity;
 
+      //ROS_ERROR_STREAM("finding local point location");
       unsigned char c = 0;
-      for (int j = 0; j < 3; j++)
-      {
-        if (local_point.data[j] > 0.0)
-          c |= 1 << j;
-      }
+      if (local_point.x > 0.0)
+        c |= 1 << 0;
+      if (local_point.y > 0.0)
+        c |= 1 << 1;
+      if (local_point.z > 0.0)
+        c |= 1 << 2;
+      //ROS_ERROR_STREAM("updating corners for point " << i << " at index " << int(c));
       corners[int(c)] = true;
-      intensities[int(c)] = local_point.intensity;
-      inverse_dists[int(c)] = 1.0 / sqrt(sqr_distances[i]);
+      */
+      intensities[i] = pointcloud[indices[i]].intensity;
+      inverse_dists[i] = 1.0 / sqrt(sqr_distances[i]);
     }
-    if (std::find(corners.begin(), corners.end(), false) == corners.end())
+    if (true) //std::find(corners.begin(), corners.end(), false) == corners.end())
     {
+      cells_updated++;
+      //ROS_ERROR_STREAM("updating map voxel");
       float intensity = barycentricInterpolate(intensities, inverse_dists);
       
       // convert interpolated intensity to an occupancy probability update
@@ -687,8 +700,8 @@ void OctomapServer::insertRadarImageToMap(const pcl::PointCloud<pcl::PointXYZI>&
       float log_odds_update = log(odds_update / (1.0 - odds_update));
       m_octree->updateNode(*it,log_odds_update);
     }
+    
   }
-
   octomap::point3d minPt, maxPt;
   ROS_DEBUG_STREAM("Bounding box keys (before): "
     << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
