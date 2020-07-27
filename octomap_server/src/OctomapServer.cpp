@@ -39,7 +39,8 @@ bool is_equal (double a, double b, double epsilon = 1.0e-7)
 
 namespace octomap_server{
 
-OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
+template<typename point_t, typename octree_t>
+OctomapServer<point_t, octree_t>::OctomapServer(ros::NodeHandle private_nh_)
 : m_nh(),
   m_pointCloudSub(NULL),
   m_tfPointCloudSub(NULL),
@@ -72,13 +73,6 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_compressMap(true),
   m_incrementalUpdate(false),
   m_initConfig(true),
-  m_sensorModel("beam"),
-  m_useLocalMapping(false),
-  m_azimuthFov(M_PI/4.0),
-  m_elevationFov(M_PI/8.0),
-  m_numScansInWindow(10),
-  m_binWidth(0.070),
-  m_useSORFilter(false),
   m_speckle_size(1)
 {
   ros::NodeHandle private_nh(private_nh_);
@@ -111,13 +105,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
     || m_sensorModel.compare("radar_image") == 0))
     ROS_ERROR_STREAM("invalid sensor model (" << m_sensorModel << "), must be either \"beam\", \"radar_point\", or \"radar_image\"");
 
-  private_nh.param("local_mapping", m_useLocalMapping, m_useLocalMapping);
   private_nh.param("sensor_model/max_range", m_maxRange, m_maxRange);
   private_nh.param("sensor_model/min_range", m_minRange, m_minRange);
-  private_nh.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
-  private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
-  private_nh.param("num_scans_in_window", m_numScansInWindow, m_numScansInWindow);
-  private_nh.param("bin_width", m_binWidth, m_binWidth);
   private_nh.param("speckle_size", m_speckle_size, m_speckle_size);
 
   private_nh.param("resolution", m_res, m_res);
@@ -209,31 +198,10 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   f = boost::bind(&OctomapServer::reconfigureCallback, this, _1, _2);
   m_reconfigureServer.setCallback(f);
 
-  if (m_sensorModel.compare("beam") != 0)
-  {
-    double rayAngle = 2.0 * atan((0.5 * m_res) / m_maxRange);// angle between two adjacent rays
-    size_t num_azimuth_bins = 2.0 * m_azimuthFov / rayAngle;
-    size_t num_elevation_bins = 2.0 * m_elevationFov / rayAngle;
-    m_radarRays.resize(num_azimuth_bins);
-    for (int i = 0; i < num_azimuth_bins; i++)
-      m_radarRays[i].resize(num_elevation_bins);
-
-    for (int i = 0; i < num_azimuth_bins; i++)
-    {
-      for (int j = 0; j < num_elevation_bins; j++)
-      {
-        double el_angle = double(j) * rayAngle - m_elevationFov;
-        double az_angle = double(i) * rayAngle - m_azimuthFov;
-        Eigen::Vector3d ray(cos(az_angle) * cos(el_angle),
-                            sin(az_angle) * cos(el_angle),
-                            sin(el_angle));
-        m_radarRays[i][j] = ray;
-      }
-    }
-  }
 }
 
-OctomapServer::~OctomapServer(){
+template<typename point_t, typename octree_t>
+OctomapServer<point_t, octree_t>::~OctomapServer(){
   if (m_tfPointCloudSub){
     delete m_tfPointCloudSub;
     m_tfPointCloudSub = NULL;
@@ -251,117 +219,9 @@ OctomapServer::~OctomapServer(){
   }
 }
 
-void OctomapServer::filterReflections(const pcl::PointCloud<pcl::PointXYZI>& cloud,
-                                      pcl::PointCloud<pcl::PointXYZI>& out_cloud)
-{
-  // detect point clusters
-  pcl::PointCloud<pcl::PointXYZI>::ConstPtr cloudPtr(new const pcl::PointCloud<pcl::PointXYZI>(cloud));
-  pcl::search::KdTree<pcl::PointXYZI>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZI>());
-  tree->setInputCloud(cloudPtr);
-  std::vector<pcl::PointIndices> cluster_indices;
-  pcl::EuclideanClusterExtraction<pcl::PointXYZI> ec;
-  ec.setClusterTolerance(0.2);
-  if (m_useLocalMapping)
-    ec.setMinClusterSize(3);
-  else
-    ec.setMinClusterSize(2);
-  ec.setMaxClusterSize(20);
-  ec.setSearchMethod(tree);
-  ec.setInputCloud(cloudPtr);
-  ec.extract(cluster_indices);
 
-  out_cloud.clear();
-
-  // determine if clusters are roughly on same ray from sensor
-  // if so cluster is likely reflections
-  for (std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin();
-    it != cluster_indices.end(); it++)
-  {
-    std::vector<int> indices_copy = it->indices;
-    bool replace_with_mean = false;
-    if (indices_copy.size() >= 3)
-    {
-      // get unit ray pointing toward each point in the cluster
-      std::vector<Eigen::Vector3d> rays;
-      for (std::vector<int>::const_iterator pit = it->indices.begin();
-        pit != it->indices.end(); pit++)
-      {
-        Eigen::Vector3d unit_ray(cloud.points[*pit].x,
-         cloud.points[*pit].y,
-         cloud.points[*pit].z);
-        unit_ray.normalize();
-        rays.push_back(unit_ray);
-      }
-      // determine the angle between each pair of points
-      Eigen::MatrixXd angles(rays.size(), rays.size());
-      angles.setZero();
-
-      for (int i = 0; i < rays.size(); i++)
-      {
-        for (int j = i+1; j < rays.size(); j++)
-        {
-          angles(i,j) = std::fabs(acos(rays[i].dot(rays[j])));
-          angles(j,i) = angles(i,j);
-        }
-      }
-      // remove outliers
-      int cluster_idx = 0;
-      for (int i = 0; i < angles.cols(); i++)
-      {
-        double min_angle = 10.0;
-        for (int j = 0; j < angles.rows(); j++)
-        {
-          if (i != j && angles(i,j) < min_angle) 
-            min_angle = angles(i,j);
-        }
-        if (min_angle > 2.0 * m_binWidth)
-        {
-          indices_copy.erase(indices_copy.begin() + cluster_idx);
-        }
-        else
-        {
-          cluster_idx++;
-        }
-      }
-      replace_with_mean = indices_copy.size() > 3;
-    }
-
-    // if max angle is less than bin width, add the 
-    // mean of the points to the new cloud
-    if (replace_with_mean)
-    {
-      pcl::PointXYZI mean_point;
-      mean_point.x = 0.0;
-      mean_point.y = 0.0;
-      mean_point.z = 0.0;
-      mean_point.intensity = 0.0;
-      for (std::vector<int>::const_iterator pit = indices_copy.begin();
-        pit != indices_copy.end(); pit++)
-      {
-        mean_point.x += cloud.points[*pit].x;
-        mean_point.y += cloud.points[*pit].y;
-        mean_point.z += cloud.points[*pit].z;
-        mean_point.intensity += cloud.points[*pit].intensity;
-      }
-      mean_point.x /= indices_copy.size();
-      mean_point.y /= indices_copy.size();
-      mean_point.z /= indices_copy.size();
-      mean_point.intensity /= indices_copy.size();
-
-      out_cloud.points.push_back(mean_point);
-    }
-    else // add the individual points to the cloud
-    {
-      for (std::vector<int>::const_iterator pit = it->indices.begin();
-        pit != it->indices.end(); pit++)
-      {
-        out_cloud.points.push_back(cloud.points[*pit]);
-      }
-    }
-  }
-}
-
-bool OctomapServer::openFile(const std::string& filename){
+template<typename point_t, typename octree_t>
+bool OctomapServer<point_t, octree_t>::openFile(const std::string& filename){
   if (filename.length() <= 3)
     return false;
 
@@ -414,7 +274,8 @@ bool OctomapServer::openFile(const std::string& filename){
 
 }
 
-void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& cloud){
+template<typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& cloud){
   ros::WallTime startTime = ros::WallTime::now();
 
   tf::StampedTransform sensorToWorldTf;
@@ -428,366 +289,87 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
   Eigen::Matrix4f sensorToWorld;
   pcl_ros::transformAsMatrix(sensorToWorldTf, sensorToWorld);
 
-  if (m_sensorModel.compare("beam") == 0)
+  //
+  // ground filtering in base frame
+  //
+  PCLPointCloud pc; // input cloud for filtering and ground-detection
+  pcl::fromROSMsg(*cloud, pc);
+
+  // set up filter for height range, also removes NANs:fi
+  pcl::PassThrough<PCLPoint> pass;
+  pass.setFilterFieldName("z");
+  pass.setFilterLimits(m_pointcloudMinZ, m_pointcloudMaxZ);
+
+  pcl::PassThrough<PCLPoint> pass_x;
+  pass_x.setFilterFieldName("x");
+  pass_x.setFilterLimits(m_pointcloudMinX, m_pointcloudMaxX);
+  pcl::PassThrough<PCLPoint> pass_y;
+  pass_y.setFilterFieldName("y");
+  pass_y.setFilterLimits(m_pointcloudMinY, m_pointcloudMaxY);
+  pcl::PassThrough<PCLPoint> pass_z;
+  pass_z.setFilterFieldName("z");
+  pass_z.setFilterLimits(m_pointcloudMinZ, m_pointcloudMaxZ);
+
+  PCLPointCloud pc_ground; // segmented ground plane
+  PCLPointCloud pc_nonground; // everything else
+
+  if (m_filterGroundPlane)
   {
-    //
-    // ground filtering in base frame
-    //
-    PCLPointCloud pc; // input cloud for filtering and ground-detection
-    pcl::fromROSMsg(*cloud, pc);
-
-    // set up filter for height range, also removes NANs:fi
-    pcl::PassThrough<PCLPoint> pass;
-    pass.setFilterFieldName("z");
-    pass.setFilterLimits(m_pointcloudMinZ, m_pointcloudMaxZ);
-
-    pcl::PassThrough<PCLPoint> pass_x;
-    pass_x.setFilterFieldName("x");
-    pass_x.setFilterLimits(m_pointcloudMinX, m_pointcloudMaxX);
-    pcl::PassThrough<PCLPoint> pass_y;
-    pass_y.setFilterFieldName("y");
-    pass_y.setFilterLimits(m_pointcloudMinY, m_pointcloudMaxY);
-    pcl::PassThrough<PCLPoint> pass_z;
-    pass_z.setFilterFieldName("z");
-    pass_z.setFilterLimits(m_pointcloudMinZ, m_pointcloudMaxZ);
-
-    PCLPointCloud pc_ground; // segmented ground plane
-    PCLPointCloud pc_nonground; // everything else
-
-    if (m_filterGroundPlane)
+    tf::StampedTransform sensorToBaseTf, baseToWorldTf;
+    try
     {
-      tf::StampedTransform sensorToBaseTf, baseToWorldTf;
-      try
-      {
-        m_tfListener.waitForTransform(m_baseFrameId, cloud->header.frame_id, cloud->header.stamp, ros::Duration(0.2));
-        m_tfListener.lookupTransform(m_baseFrameId, cloud->header.frame_id, cloud->header.stamp, sensorToBaseTf);
-        m_tfListener.lookupTransform(m_worldFrameId, m_baseFrameId, cloud->header.stamp, baseToWorldTf);
-      }
-      catch(tf::TransformException& ex)
-      {
-        ROS_ERROR_STREAM( "Transform error for ground plane filter: " << ex.what() << ", quitting callback.\n"
-                          "You need to set the base_frame_id or disable filter_ground.");
-      }
-
-
-      Eigen::Matrix4f sensorToBase, baseToWorld;
-      pcl_ros::transformAsMatrix(sensorToBaseTf, sensorToBase);
-      pcl_ros::transformAsMatrix(baseToWorldTf, baseToWorld);
-
-      // transform pointcloud from sensor frame to fixed robot frame
-      pcl::transformPointCloud(pc, pc, sensorToBase);
-      pass.setInputCloud(pc.makeShared());
-      pass.filter(pc);
-      filterGroundPlane(pc, pc_ground, pc_nonground);
-
-      // transform clouds to world frame for insertion
-      pcl::transformPointCloud(pc_ground, pc_ground, baseToWorld);
-      pcl::transformPointCloud(pc_nonground, pc_nonground, baseToWorld);
-    } 
-    else 
+      m_tfListener.waitForTransform(m_baseFrameId, cloud->header.frame_id, cloud->header.stamp, ros::Duration(0.2));
+      m_tfListener.lookupTransform(m_baseFrameId, cloud->header.frame_id, cloud->header.stamp, sensorToBaseTf);
+      m_tfListener.lookupTransform(m_worldFrameId, m_baseFrameId, cloud->header.stamp, baseToWorldTf);
+    }
+    catch(tf::TransformException& ex)
     {
-      
-      if (m_sensorModel.compare("radar_point") == 0)
-      {
-        
-      }
-      else if (m_sensorModel.compare("beam") == 0)
-      {
-        pcl::transformPointCloud(pc, pc, sensorToWorld);
-        // just filter height range:
-        pass_x.setInputCloud(pc.makeShared());
-        pass_x.filter(pc);
-        pass_y.setInputCloud(pc.makeShared());
-        pass_y.filter(pc);
-        pass_z.setInputCloud(pc.makeShared());
-        pass_z.filter(pc);
-        pc_nonground = pc;
-      }
-      // pc_nonground is empty without ground segmentation
-      pc_ground.header = pc.header;
-      pc_nonground.header = pc.header;
+      ROS_ERROR_STREAM( "Transform error for ground plane filter: " << ex.what() << ", quitting callback.\n"
+                        "You need to set the base_frame_id or disable filter_ground.");
     }
 
-    insertScan(sensorToWorldTf.getOrigin(), pc_ground, pc_nonground);
 
-    double total_elapsed = (ros::WallTime::now() - startTime).toSec();
-    ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
-  }
+    Eigen::Matrix4f sensorToBase, baseToWorld;
+    pcl_ros::transformAsMatrix(sensorToBaseTf, sensorToBase);
+    pcl_ros::transformAsMatrix(baseToWorldTf, baseToWorld);
+
+    // transform pointcloud from sensor frame to fixed robot frame
+    pcl::transformPointCloud(pc, pc, sensorToBase);
+    pass.setInputCloud(pc.makeShared());
+    pass.filter(pc);
+    filterGroundPlane(pc, pc_ground, pc_nonground);
+
+    // transform clouds to world frame for insertion
+    pcl::transformPointCloud(pc_ground, pc_ground, baseToWorld);
+    pcl::transformPointCloud(pc_nonground, pc_nonground, baseToWorld);
+  } 
   else 
   {
+    pcl::transformPointCloud(pc, pc, sensorToWorld);
+    // just filter height range:
+    pass_x.setInputCloud(pc.makeShared());
+    pass_x.filter(pc);
+    pass_y.setInputCloud(pc.makeShared());
+    pass_y.filter(pc);
+    pass_z.setInputCloud(pc.makeShared());
+    pass_z.filter(pc);
+    pc_nonground = pc;
 
-    pcl::PointCloud<pcl::PointXYZI> pc;
-    pcl::fromROSMsg(*cloud, pc);
-
-    if (m_sensorModel.compare("radar_point") == 0)
-    {
-      pcl::PointCloud<pcl::PointXYZI> pc_filtered;
-      filterReflections(pc, pc_filtered);
-
-      if (m_useLocalMapping)
-      {
-        insertRadarScanToDeque(sensorToWorldTf, pc_filtered);
-      }
-      else
-      {
-        pcl::transformPointCloud(pc_filtered, pc_filtered, sensorToWorld);
-        insertRadarScanToMap(pc_filtered, sensorToWorld);
-      }
-    }
-    else // if using the radar image sensor model
-    {
-      pcl::transformPointCloud(pc, pc, sensorToWorld);
-      insertRadarImageToMap(pc, sensorToWorld);
-    }
-
-    double total_elapsed = (ros::WallTime::now() - startTime).toSec();
-    ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu pts, %f sec)", pc.size(), total_elapsed);
+    // pc_nonground is empty without ground segmentation
+    pc_ground.header = pc.header;
+    pc_nonground.header = pc.header;
   }
+
+  insertScan(sensorToWorldTf.getOrigin(), pc_ground, pc_nonground);
+
+  double total_elapsed = (ros::WallTime::now() - startTime).toSec();
+  ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
+
   publishAll(cloud->header.stamp);
 }
 
-void OctomapServer::insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
-                                     const pcl::PointCloud<pcl::PointXYZI>& pointCloud)
-{
-  std_srvs::Empty::Request req; 
-  std_srvs::Empty::Response resp;
-  resetSrv(req, resp);
-  Eigen::Matrix4f sensorPose;
-  pcl_ros::transformAsMatrix(sensorPoseTf, sensorPose);
-  m_pointClouds.push_front(std::make_pair(pointCloud, sensorPose));
-  if (m_pointClouds.size() > m_numScansInWindow)
-  {
-    m_pointClouds.pop_back();
-  }
-  Eigen::Matrix4f initial_pose = m_pointClouds.front().second;
-  pcl::PointCloud<pcl::PointXYZI> composed_cloud;
-  for (int i = 0; i < m_pointClouds.size(); i++)
-  {
-    pcl::PointCloud<pcl::PointXYZI> tfCloud;
-    pcl::transformPointCloud(m_pointClouds[i].first, tfCloud, initial_pose.inverse() * m_pointClouds[i].second);
-    composed_cloud += tfCloud;
-  }
-  insertRadarScanToMap(composed_cloud, Eigen::Matrix4f::Identity());
-}
-
-void OctomapServer::getCellsInFov(const Eigen::Matrix4f& sensorPose,
-                                  KeySet& cells)
-{
-  for (int i = 0; i < m_radarRays.size(); i++)
-  {
-    for (int j = 0; j < m_radarRays[i].size(); j++)
-    {
-      Eigen::Vector4f sensorFrameRayStart(m_radarRays[i][j].x() * m_minRange,
-                                          m_radarRays[i][j].y() * m_minRange,
-                                          m_radarRays[i][j].z() * m_minRange,
-                                          1.0);
-      Eigen::Vector4f sensorFrameRayEnd(m_radarRays[i][j].x() * m_maxRange,
-                                        m_radarRays[i][j].y() * m_maxRange,
-                                        m_radarRays[i][j].z() * m_maxRange,
-                                        1.0);
-      Eigen::Vector4f globalFrameRayStart = sensorPose * sensorFrameRayStart;
-      Eigen::Vector4f globalFrameRayEnd = sensorPose * sensorFrameRayEnd;
-      point3d startPoint(globalFrameRayStart[0],
-                         globalFrameRayStart[1],
-                         globalFrameRayStart[2]);
-      point3d endPoint(globalFrameRayEnd[0],
-                       globalFrameRayEnd[1],
-                       globalFrameRayEnd[2]);
-
-      if (m_octree->computeRayKeys(startPoint, endPoint, m_keyRay))
-        cells.insert(m_keyRay.begin(), m_keyRay.end());
-
-      octomap::OcTreeKey endKey;
-      if (m_octree->coordToKeyChecked(endPoint, endKey))
-      {
-        updateMinKey(endKey, m_updateBBXMin);
-        updateMaxKey(endKey, m_updateBBXMax);
-      }
-      else
-      {
-        ROS_ERROR_STREAM("Could not generate key for radar fov point " << endPoint);
-      }
-    }
-  }
-}
-
-float OctomapServer::barycentricInterpolate(const std::vector<float> &intensities,
-                                            const std::vector<float> &inverse_dists)
-{
-  float sum_inverse_dists = 0.0;
-  for (int i = 0; i < inverse_dists.size(); i++)
-    sum_inverse_dists += inverse_dists[i];
-
-  float out_intensity = 0.0;
-  for (int i = 0; i < intensities.size(); i++)
-    out_intensity += intensities[i] * inverse_dists[i] / sum_inverse_dists;
-
-  return out_intensity;
-}
-
-
-void OctomapServer::insertRadarImageToMap(const pcl::PointCloud<pcl::PointXYZI>& pointcloud,
-                                          const Eigen::Matrix4f& sensorPose)
-{
-  // Create KD tree from the radar pointcloud
-  //pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr(pointcloud);
-  pcl::KdTreeFLANN<pcl::PointXYZI> kdtree;
-  pcl::PointCloud<pcl::PointXYZI>::ConstPtr cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>(pointcloud));
-  //ROS_ERROR_STREAM("setting input cloud");
-  kdtree.setInputCloud(cloud_ptr, NULL);
-  //ROS_ERROR_STREAM("getting cells in fov");
-  KeySet cell_keys;
-  getCellsInFov(sensorPose, cell_keys);
-  //ROS_ERROR_STREAM("updating cell values");
-  int cells_updated = 0;
-  for (KeySet::iterator it = cell_keys.begin();
-       it != cell_keys.end(); it++)
-  {
-    
-    //ROS_ERROR_STREAM("getting query point");
-    point3d cell_coord = m_octree->keyToCoord(*it);
-    pcl::PointXYZI query_point;
-    query_point.x = cell_coord.x();
-    query_point.y = cell_coord.y();
-    query_point.z = cell_coord.z();
-    query_point.intensity = 0.0;
-    //ROS_ERROR_STREAM("finding surrounding radar image voxels");
-    // Get eight surrounding points in radar image
-    int K=8;
-    std::vector<int> indices(K);
-    std::vector<float> sqr_distances(K);
-    kdtree.nearestKSearch(query_point, K, indices, sqr_distances);
-
-
-    // determine if resultant points form box around given map cell
-    // center the 8 points and check the positivity/negativity of each coordinate
-    //ROS_ERROR_STREAM("checking if voxels surround query point");
-    std::vector<bool> corners(K,false);
-    std::vector<float> inverse_dists(K);
-    std::vector<float> intensities(K);
-    for (int i = 0; i < indices.size(); i++)
-    {
-      /*
-      //ROS_ERROR_STREAM("centering local point");
-      pcl::PointXYZI local_point;
-      local_point.x = pointcloud[indices[i]].x - query_point.x;
-      local_point.y = pointcloud[indices[i]].y - query_point.y;
-      local_point.z = pointcloud[indices[i]].z - query_point.z;
-      local_point.intensity = pointcloud[indices[i]].intensity;
-
-      //ROS_ERROR_STREAM("finding local point location");
-      unsigned char c = 0;
-      if (local_point.x > 0.0)
-        c |= 1 << 0;
-      if (local_point.y > 0.0)
-        c |= 1 << 1;
-      if (local_point.z > 0.0)
-        c |= 1 << 2;
-      //ROS_ERROR_STREAM("updating corners for point " << i << " at index " << int(c));
-      corners[int(c)] = true;
-      */
-      intensities[i] = pointcloud[indices[i]].intensity;
-      inverse_dists[i] = 1.0 / sqrt(sqr_distances[i]);
-    }
-    if (true) //std::find(corners.begin(), corners.end(), false) == corners.end())
-    {
-      cells_updated++;
-      //ROS_ERROR_STREAM("updating map voxel");
-      float intensity = barycentricInterpolate(intensities, inverse_dists);
-      
-      // convert interpolated intensity to an occupancy probability update
-      float odds_update = intensity * (m_probHit - m_probMiss) + m_probMiss;
-      float log_odds_update = log(odds_update / (1.0 - odds_update));
-      m_octree->updateNode(*it,log_odds_update);
-    }
-    
-  }
-  octomap::point3d minPt, maxPt;
-  ROS_DEBUG_STREAM("Bounding box keys (before): "
-    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
-    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
-  minPt = m_octree->keyToCoord(m_updateBBXMin);
-  maxPt = m_octree->keyToCoord(m_updateBBXMax);
-  ROS_DEBUG_STREAM("Bounding box keys (after): "
-    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
-    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
-
-  if (m_compressMap)
-    m_octree->prune();
-}
-
-
-void OctomapServer::insertRadarScanToMap(const pcl::PointCloud<pcl::PointXYZI>& pointCloud,
-                                         const Eigen::Matrix4f& sensorPose)
-{
-  #ifdef COLOR_OCTOMAP_SERVER
-  unsigned char* colors = new unsigned char[3];
-  #endif
-
-  KeySet free_cells;
-  KeySet occupied_cells;
-
-  getCellsInFov(sensorPose, free_cells);
-  
-  // remove cells that contain targets from the free cell set 
-  // and add them to the occupied cell set
-  for (pcl::PointCloud<pcl::PointXYZI>::const_iterator it = pointCloud.begin(); 
-       it != pointCloud.end(); it++)
-  {
-    point3d target(it->x, it->y, it->z);
-    octomap::OcTreeKey targetKey;
-    if(m_octree->coordToKeyChecked(target, targetKey))
-    {
-      KeySet::iterator key_it = free_cells.find(targetKey);
-      if (key_it != free_cells.end())
-      {
-        free_cells.erase(key_it);
-        occupied_cells.insert(targetKey);
-      }
-    }
-    else
-    {
-      ROS_ERROR_STREAM("could not create Key for radar target at " << target);
-    }
-  }
-
-  // update occupancy probability for free cells
-  for (KeySet::iterator it = free_cells.begin(); 
-    it != free_cells.end(); it++)
-  {
-    m_octree->updateNode(*it, false);
-  }
-
-  // update occupancy probability for occupied cells
-  for (KeySet::iterator it = occupied_cells.begin(); 
-    it != occupied_cells.end(); it++)
-  {
-    m_octree->updateNode(*it, true);
-  }
-
-  octomap::point3d minPt, maxPt;
-  ROS_DEBUG_STREAM("Bounding box keys (before): "
-    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
-    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
-  minPt = m_octree->keyToCoord(m_updateBBXMin);
-  maxPt = m_octree->keyToCoord(m_updateBBXMax);
-  ROS_DEBUG_STREAM("Bounding box keys (after): "
-    << m_updateBBXMin[0] << " " << m_updateBBXMin[1] << " " << m_updateBBXMin[2] << " / "
-    << m_updateBBXMax[0] << " " << m_updateBBXMax[1] << " " << m_updateBBXMax[2]);
-
-  if (m_compressMap)
-    m_octree->prune();
-
-  #ifdef COLOR_OCTOMAP_SERVER
-  if (colors)
-  {
-    delete[] colors;
-    colors = NULL;
-  }
-  #endif
-}
-
-void OctomapServer::insertScan(const tf::Point& sensorOriginTf, 
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::insertScan(const tf::Point& sensorOriginTf, 
                                const PCLPointCloud& ground, 
                                const PCLPointCloud& nonground)
 {
@@ -916,7 +498,8 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf,
 #endif
 }
 
-void OctomapServer::publishAll(const ros::Time& rostime){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::publishAll(const ros::Time& rostime){
   ros::WallTime startTime = ros::WallTime::now();
   size_t octomapSize = m_octree->size();
   // TODO: estimate num occ. voxels for size of arrays (reserve)
@@ -933,7 +516,7 @@ void OctomapServer::publishAll(const ros::Time& rostime){
   m_publish2DMap = (m_latchedTopics || m_mapPub.getNumSubscribers() > 0);
 
   // init markers for free space:
-  visualization_msgs::MarkerArray freeNodesVis;
+  visualization_msgs:publishA:MarkerArray freeNodesVis;
   // each array stores all cubes of a different size, one for each depth level:
   freeNodesVis.markers.resize(m_treeDepth+1);
 
@@ -1067,10 +650,7 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     for (unsigned i= 0; i < occupiedNodesVis.markers.size(); ++i){
       double size = m_octree->getNodeSize(i);
 
-      if (m_sensorModel.compare("radar_point") == 0 && m_useLocalMapping)
-        occupiedNodesVis.markers[i].header.frame_id = m_worldFrameId;
-      else
-        occupiedNodesVis.markers[i].header.frame_id = m_baseFrameId;
+      occupiedNodesVis.markers[i].header.frame_id = m_baseFrameId;
       occupiedNodesVis.markers[i].header.stamp = rostime;
       occupiedNodesVis.markers[i].ns = "map";
       occupiedNodesVis.markers[i].id = i;
@@ -1139,8 +719,8 @@ void OctomapServer::publishAll(const ros::Time& rostime){
 
 }
 
-
-bool OctomapServer::octomapBinarySrv(OctomapSrv::Request  &req,
+template <typename point_t, typename octree_t>
+bool OctomapServer<point_t, octree_t>::octomapBinarySrv(OctomapSrv::Request  &req,
                                     OctomapSrv::Response &res)
 {
   ros::WallTime startTime = ros::WallTime::now();
@@ -1155,7 +735,8 @@ bool OctomapServer::octomapBinarySrv(OctomapSrv::Request  &req,
   return true;
 }
 
-bool OctomapServer::octomapFullSrv(OctomapSrv::Request  &req,
+template <typename point_t, typename octree_t>
+bool OctomapServer<point_t, octree_t>::octomapFullSrv(OctomapSrv::Request  &req,
                                     OctomapSrv::Response &res)
 {
   ROS_INFO("Sending full map data on service request");
@@ -1169,7 +750,8 @@ bool OctomapServer::octomapFullSrv(OctomapSrv::Request  &req,
   return true;
 }
 
-bool OctomapServer::clearBBXSrv(BBXSrv::Request& req, BBXSrv::Response& resp){
+template <typename point_t, typename octree_t>
+bool OctomapServer<point_t, octree_t>::clearBBXSrv(BBXSrv::Request& req, BBXSrv::Response& resp){
   point3d min = pointMsgToOctomap(req.min);
   point3d max = pointMsgToOctomap(req.max);
 
@@ -1188,7 +770,8 @@ bool OctomapServer::clearBBXSrv(BBXSrv::Request& req, BBXSrv::Response& resp){
   return true;
 }
 
-bool OctomapServer::resetSrv(std_srvs::Empty::Request& req, std_srvs::Empty::Response& resp) {
+template <typename point_t, typename octree_t>
+bool OctomapServer<point_t, octree_t>::resetSrv(std_srvs::Empty::Request& req, std_srvs::Empty::Response& resp) {
   visualization_msgs::MarkerArray occupiedNodesVis;
   occupiedNodesVis.markers.resize(m_treeDepth +1);
   ros::Time rostime = ros::Time::now();
@@ -1234,7 +817,8 @@ bool OctomapServer::resetSrv(std_srvs::Empty::Request& req, std_srvs::Empty::Res
   return true;
 }
 
-void OctomapServer::publishBinaryOctoMap(const ros::Time& rostime) const{
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::publishBinaryOctoMap(const ros::Time& rostime) const{
 
   Octomap map;
   map.header.frame_id = m_worldFrameId;
@@ -1246,7 +830,8 @@ void OctomapServer::publishBinaryOctoMap(const ros::Time& rostime) const{
     ROS_ERROR("Error serializing OctoMap");
 }
 
-void OctomapServer::publishFullOctoMap(const ros::Time& rostime) const{
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::publishFullOctoMap(const ros::Time& rostime) const{
 
   Octomap map;
   map.header.frame_id = m_worldFrameId;
@@ -1259,8 +844,8 @@ void OctomapServer::publishFullOctoMap(const ros::Time& rostime) const{
 
 }
 
-
-void OctomapServer::filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const{
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const{
   ground.header = pc.header;
   nonground.header = pc.header;
 
@@ -1369,7 +954,8 @@ void OctomapServer::filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& gr
 
 }
 
-void OctomapServer::handlePreNodeTraversal(const ros::Time& rostime){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::handlePreNodeTraversal(const ros::Time& rostime){
   if (m_publish2DMap){
     // init projected 2D map:
     m_gridmap.header.frame_id = m_worldFrameId;
@@ -1479,41 +1065,47 @@ void OctomapServer::handlePreNodeTraversal(const ros::Time& rostime){
 
 }
 
-void OctomapServer::handlePostNodeTraversal(const ros::Time& rostime){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::handlePostNodeTraversal(const ros::Time& rostime){
 
   if (m_publish2DMap)
     m_mapPub.publish(m_gridmap);
 }
 
-void OctomapServer::handleOccupiedNode(const OcTreeT::iterator& it){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::handleOccupiedNode(const OcTreeT::iterator& it){
 
   if (m_publish2DMap && m_projectCompleteMap){
     update2DMap(it, true);
   }
 }
 
-void OctomapServer::handleFreeNode(const OcTreeT::iterator& it){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::handleFreeNode(const OcTreeT::iterator& it){
 
   if (m_publish2DMap && m_projectCompleteMap){
     update2DMap(it, false);
   }
 }
 
-void OctomapServer::handleOccupiedNodeInBBX(const OcTreeT::iterator& it){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::handleOccupiedNodeInBBX(const OcTreeT::iterator& it){
 
   if (m_publish2DMap && !m_projectCompleteMap){
     update2DMap(it, true);
   }
 }
 
-void OctomapServer::handleFreeNodeInBBX(const OcTreeT::iterator& it){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::handleFreeNodeInBBX(const OcTreeT::iterator& it){
 
   if (m_publish2DMap && !m_projectCompleteMap){
     update2DMap(it, false);
   }
 }
 
-void OctomapServer::update2DMap(const OcTreeT::iterator& it, bool occupied){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::update2DMap(const OcTreeT::iterator& it, bool occupied){
 
   // update 2D map (occupied always overrides):
 
@@ -1542,7 +1134,8 @@ void OctomapServer::update2DMap(const OcTreeT::iterator& it, bool occupied){
   }
 }
 
-bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const 
+template <typename point_t, typename octree_t>
+bool OctomapServer<point_t, octree_t>::isSpeckleNode(const OcTreeKey &nKey) const 
 {
   std::vector<OcTreeKey> occupied_keys;
   occupied_keys.push_back(nKey);
@@ -1574,7 +1167,8 @@ bool OctomapServer::isSpeckleNode(const OcTreeKey &nKey) const
   return occupied_keys.size() < m_speckle_size;
 }
 
-void OctomapServer::reconfigureCallback(octomap_server::OctomapServerConfig& config, uint32_t level){
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::reconfigureCallback(octomap_server::OctomapServerConfig& config, uint32_t level){
   if (m_maxTreeDepth != unsigned(config.max_depth))
     m_maxTreeDepth = unsigned(config.max_depth);
   else{
@@ -1632,7 +1226,8 @@ void OctomapServer::reconfigureCallback(octomap_server::OctomapServerConfig& con
   publishAll();
 }
 
-void OctomapServer::adjustMapData(nav_msgs::OccupancyGrid& map, const nav_msgs::MapMetaData& oldMapInfo) const{
+template <typename point_t, typename octree_t>
+void OctomapServer<point_t, octree_t>::adjustMapData(nav_msgs::OccupancyGrid& map, const nav_msgs::MapMetaData& oldMapInfo) const{
   if (map.info.resolution != oldMapInfo.resolution){
     ROS_ERROR("Resolution of map changed, cannot be adjusted");
     return;
@@ -1672,8 +1267,8 @@ void OctomapServer::adjustMapData(nav_msgs::OccupancyGrid& map, const nav_msgs::
 
 }
 
-
-std_msgs::ColorRGBA OctomapServer::heightMapColor(double h) {
+template <typename point_t, typename octree_t>
+std_msgs::ColorRGBA OctomapServer<point_t, octree_t>::heightMapColor(double h) {
 
   std_msgs::ColorRGBA color;
   color.a = 1.0;
