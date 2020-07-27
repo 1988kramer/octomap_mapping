@@ -70,25 +70,17 @@
 #include <octomap/octomap.h>
 #include <octomap/OcTreeKey.h>
 
-//#define COLOR_OCTOMAP_SERVER // switch color here - easier maintenance, only maintain OctomapServer. Two targets are defined in the cmake, octomap_server_color and octomap_server. One has this defined, and the other doesn't
-
-#ifdef COLOR_OCTOMAP_SERVER
-#include <octomap/ColorOcTree.h>
-#endif
 
 namespace octomap_server {
+
+template<typename point_t, octree_t>
 class OctomapServer {
 
 public:
-#ifdef COLOR_OCTOMAP_SERVER
-  typedef pcl::PointXYZRGB PCLPoint;
-  typedef pcl::PointCloud<pcl::PointXYZRGB> PCLPointCloud;
-  typedef octomap::ColorOcTree OcTreeT;
-#else
-  typedef pcl::PointXYZ PCLPoint;
-  typedef pcl::PointCloud<pcl::PointXYZ> PCLPointCloud;
-  typedef octomap::OcTree OcTreeT;
-#endif
+  typedef point_t PCLPoint;
+  typedef pcl::PointCloud<PCLPoint> PCLPointCloud;
+  typedef octree_t OcTreeT;
+
   typedef octomap_msgs::GetOctomap OctomapSrv;
   typedef octomap_msgs::BoundingBoxQuery BBXSrv;
 
@@ -137,66 +129,9 @@ protected:
   * @param ground scan endpoints on the ground plane (only clear space)
   * @param nonground all other endpoints (clear up to occupied endpoint)
   */
-  virtual void insertScan(const tf::Point& sensorOrigin, const PCLPointCloud& ground, const PCLPointCloud& nonground);
+  virtual void insertScan(const tf::Point& sensorOrigin, const PCLPointCloud& ground, const PCLPointCloud& nonground); 
+ 
 
-  /**
-    * @brief update occupancy map with ground and nonground scans using the radar sensor model
-    * Input scans should be in the global map frame
-    *
-    * @param sensorPose The pose of the sensor in the global frame
-    * @param pointCloud Radar returns in the global frame
-    */
-  void insertRadarScanToMap(const pcl::PointCloud<pcl::PointXYZI>& pointCloud, const Eigen::Matrix4f& sensorPose);
-
-  /**
-    * @brief update opccupancy map with a dense radar image in polar coordinates
-    * @param msg The dense pointcloud representing the radar image in the global frame
-    * @param sensorPose The pose of the radar sensor in the global frame
-    */
-  void insertRadarImageToMap(const pcl::PointCloud<pcl::PointXYZI>& pointcloud, 
-                             const Eigen::Matrix4f& sensorPose);
-
-  /**
-    * @brief uses barycentric interpolation to calculate the intensity of a query
-    *        point from the intensities and inverse distances to a set of
-    *        surrounding points
-    * @param[in] intensities the intensities of the surrounding points
-    * @param[in] inverse_dists the inverse distances to the surrounding points
-    * @return the interpolated intensity of the query point
-    */
-  float barycentricInterpolate(const std::vector<float> &intensities,
-                               const std::vector<float> &inverse_dists);
-
-  /**
-    * @brief finds the set of cells currently in the sensor's field of view
-    * @param[in] the sensor's current pose
-    * @param[out] the set of cell keys within the sensor's field of view
-    */
-  void getCellsInFov(const Eigen::Matrix4f& sensorPose, octomap::KeySet& cells);
-
-  /**
-    * @brief Adds the most recent scan to map window and removes the oldest if necessary
-    * @param[in] sensorPoseTf The transform describing the sensor's estimated 
-    *                          pose in the world frame
-    * @param[in] pointCloud The point cloud in the sensor frame
-    */
-  void insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
-                              const pcl::PointCloud<pcl::PointXYZI>& pointCloud);
-
-  /**
-    * @brief filters multipath reflections from input radar point cloud
-    * @param[in] cloud The raw pointcloud
-    * @param[out] out_cloud filtered point cloud
-    */
-  void filterReflections(const pcl::PointCloud<pcl::PointXYZI>& cloud, 
-                         pcl::PointCloud<pcl::PointXYZI>& out_cloud);
-
-  /**
-    * @ brief applies statistical outlier rejection to octomap
-    */
-  void applySORFilter();
-
-  void applyClusterFilter();
 
   /// label the input cloud "pc" into ground and nonground. Should be in the robot's fixed frame (not world!)
   void filterGroundPlane(const PCLPointCloud& pc, PCLPointCloud& ground, PCLPointCloud& nonground) const;
@@ -313,8 +248,6 @@ protected:
   double m_groundFilterAngle;
   double m_groundFilterPlaneDistance;
 
-  std::string m_sensorModel;
-  bool m_useLocalMapping;
   bool m_useSORFilter;
 
   double m_azimuthFov;
@@ -334,10 +267,7 @@ protected:
   unsigned m_multires2DScale;
   bool m_projectCompleteMap;
   bool m_useColoredMap;
-
-  std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
-  std::deque<std::pair<pcl::PointCloud<pcl::PointXYZI>,Eigen::Matrix4f> > m_pointClouds;
-  int m_numScansInWindow;
+  
 };
 }
 

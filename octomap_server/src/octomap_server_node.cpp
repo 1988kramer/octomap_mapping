@@ -54,7 +54,7 @@ int main(int argc, char** argv){
     exit(-1);
   }
 
-  OctomapServer server;
+  OctomapServer<pcl::PointXYZ, octomap::OcTree> server;
   ros::spinOnce();
 
   if (argc == 2){
