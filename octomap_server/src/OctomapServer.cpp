@@ -73,8 +73,7 @@ OctomapServer<point_t, octree_t>::OctomapServer(ros::NodeHandle private_nh_)
   m_compressMap(true),
   m_incrementalUpdate(false),
   m_initConfig(true),
-  m_speckle_size(1),
-  test_mem_(0.1)
+  m_speckle_size(1)
 {
   ros::NodeHandle private_nh(private_nh_);
   private_nh.param("frame_id", m_worldFrameId, m_worldFrameId);

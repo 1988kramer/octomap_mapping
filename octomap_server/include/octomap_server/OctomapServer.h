@@ -272,7 +272,6 @@ protected:
   unsigned m_multires2DScale;
   bool m_projectCompleteMap;
   bool m_useColoredMap;
-  octomap::MeanOcTree test_mem_;
 };
 }
 

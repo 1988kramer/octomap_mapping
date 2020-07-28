@@ -26,10 +26,10 @@ RealSarMapServer::RealSarMapServer(ros::NodeHandle private_nh_)
 
   for (int i = 0; i < num_azimuth_bins; i++)
   {
+    double az_angle = double(i) * rayAngle - m_azimuthFov;
     for (int j = 0; j < num_elevation_bins; j++)
     {
       double el_angle = double(j) * rayAngle - m_elevationFov;
-      double az_angle = double(i) * rayAngle - m_azimuthFov;
       Eigen::Vector3d ray(cos(az_angle) * cos(el_angle),
                           sin(az_angle) * cos(el_angle),
                           sin(el_angle));
@@ -95,11 +95,9 @@ void RealSarMapServer::insertRadarImageToMap(const PCLPointCloud& pointcloud,
   KeySet cell_keys;
   getCellsInFov(sensorPose, cell_keys);
   //ROS_ERROR_STREAM("updating cell values");
-  int cells_updated = 0;
   for (KeySet::iterator it = cell_keys.begin();
        it != cell_keys.end(); it++)
   {
-    
     //ROS_ERROR_STREAM("getting query point");
     point3d cell_coord = m_octree->keyToCoord(*it);
     pcl::PointXYZI query_point;
@@ -109,7 +107,7 @@ void RealSarMapServer::insertRadarImageToMap(const PCLPointCloud& pointcloud,
     query_point.intensity = 0.0;
     //ROS_ERROR_STREAM("finding surrounding radar image voxels");
     // Get eight surrounding points in radar image
-    int K=8;
+    int K=3;
     std::vector<int> indices(K);
     std::vector<float> sqr_distances(K);
     kdtree.nearestKSearch(query_point, K, indices, sqr_distances);
@@ -146,11 +144,9 @@ void RealSarMapServer::insertRadarImageToMap(const PCLPointCloud& pointcloud,
       inverse_dists[i] = 1.0 / sqrt(sqr_distances[i]);
     }
     if (true) //std::find(corners.begin(), corners.end(), false) == corners.end())
-    {
-      cells_updated++;
-      //ROS_ERROR_STREAM("updating map voxel");
+    {      
       float intensity = barycentricInterpolate(intensities, inverse_dists);
-      
+      //ROS_ERROR_STREAM("updating map voxel " << cell_coord << " with intensity " << intensity);
       // convert interpolated intensity to an occupancy probability update
       m_octree->addObservation(*it,intensity);
     }
@@ -195,7 +191,9 @@ void RealSarMapServer::getCellsInFov(const Eigen::Matrix4f& sensorPose,
                        globalFrameRayEnd[2]);
 
       if (m_octree->computeRayKeys(startPoint, endPoint, m_keyRay))
+      {
         cells.insert(m_keyRay.begin(), m_keyRay.end());
+      }
 
       octomap::OcTreeKey endKey;
       if (m_octree->coordToKeyChecked(endPoint, endKey))
