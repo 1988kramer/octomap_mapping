@@ -34,7 +34,12 @@
 
 namespace octomap_server {
 
-class TrackingOctomapServer: public OctomapServer {
+#ifdef COLOR_OCTOMAP_SERVER
+class TrackingOctomapServer: public OctomapServer<pcl::PointXYZRGB, octomap::ColorOcTree> {
+#else
+class TrackingOctomapServer: public OctomapServer<pcl::PointXYZ, octomap::OcTree> {
+#endif
+
 public:
   TrackingOctomapServer(const std::string& filename = "");
   virtual ~TrackingOctomapServer();

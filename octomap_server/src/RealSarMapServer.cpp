@@ -1,14 +1,19 @@
 #include <octomap_server/RealSarMapServer.h>
 
-RealSarMapServer::RealSarMapServer(ros::Nodehandle private_nh)
-: OctomapServer<pcl::PointXYZI, octomap::MeanOcTree>(private_nh),
+using namespace octomap;
+
+namespace octomap_server
+{
+
+RealSarMapServer::RealSarMapServer(ros::NodeHandle private_nh_)
+: OctomapServer<pcl::PointXYZI, octomap::MeanOcTree>(private_nh_),
   m_azimuthFov(M_PI/4.0),
   m_elevationFov(M_PI/8.0),
   m_intensityThreshold(0.0)
 {
-  private_nh.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
-  private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
-  private_nh.param("intensity_threshold", m_intensityThreshold, m_intensityThreshold);
+  private_nh_.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
+  private_nh_.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
+  private_nh_.param("intensity_threshold", m_intensityThreshold, m_intensityThreshold);
   m_octree->setIntensityThreshold(m_intensityThreshold);
 
   double rayAngle = 2.0 * atan((0.5 * m_res) / m_maxRange);// angle between two adjacent rays
@@ -164,3 +169,46 @@ void RealSarMapServer::insertRadarImageToMap(const PCLPointCloud& pointcloud,
   if (m_compressMap)
     m_octree->prune();
 }
+
+void RealSarMapServer::getCellsInFov(const Eigen::Matrix4f& sensorPose,
+                                  KeySet& cells)
+{
+  for (int i = 0; i < m_radarRays.size(); i++)
+  {
+    for (int j = 0; j < m_radarRays[i].size(); j++)
+    {
+      Eigen::Vector4f sensorFrameRayStart(m_radarRays[i][j].x() * m_minRange,
+                                          m_radarRays[i][j].y() * m_minRange,
+                                          m_radarRays[i][j].z() * m_minRange,
+                                          1.0);
+      Eigen::Vector4f sensorFrameRayEnd(m_radarRays[i][j].x() * m_maxRange,
+                                        m_radarRays[i][j].y() * m_maxRange,
+                                        m_radarRays[i][j].z() * m_maxRange,
+                                        1.0);
+      Eigen::Vector4f globalFrameRayStart = sensorPose * sensorFrameRayStart;
+      Eigen::Vector4f globalFrameRayEnd = sensorPose * sensorFrameRayEnd;
+      point3d startPoint(globalFrameRayStart[0],
+                         globalFrameRayStart[1],
+                         globalFrameRayStart[2]);
+      point3d endPoint(globalFrameRayEnd[0],
+                       globalFrameRayEnd[1],
+                       globalFrameRayEnd[2]);
+
+      if (m_octree->computeRayKeys(startPoint, endPoint, m_keyRay))
+        cells.insert(m_keyRay.begin(), m_keyRay.end());
+
+      octomap::OcTreeKey endKey;
+      if (m_octree->coordToKeyChecked(endPoint, endKey))
+      {
+        updateMinKey(endKey, m_updateBBXMin);
+        updateMaxKey(endKey, m_updateBBXMax);
+      }
+      else
+      {
+        ROS_ERROR_STREAM("Could not generate key for radar fov point " << endPoint);
+      }
+    }
+  }
+}
+
+} // end namespace octomap_server

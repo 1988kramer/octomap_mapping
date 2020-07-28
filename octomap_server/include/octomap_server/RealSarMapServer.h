@@ -8,7 +8,7 @@ namespace octomap_server
   class RealSarMapServer: public OctomapServer<pcl::PointXYZI, octomap::MeanOcTree>
   {
   public:
-    RealSarMapServer(ros::NodeHandle private_nh);
+    RealSarMapServer(ros::NodeHandle private_nh_ = ros::NodeHandle("~"));
 
     void insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& cloud);
 
@@ -43,9 +43,10 @@ namespace octomap_server
 
     double m_azimuthFov;
     double m_elevationFov;
+    double m_intensityThreshold;
     std::vector<std::vector<Eigen::Vector3d>> m_radarRays;
 
-  }
+  };
 }
 
 #endif

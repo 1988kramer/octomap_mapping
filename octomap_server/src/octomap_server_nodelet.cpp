@@ -50,7 +50,7 @@ public:
   {
     NODELET_DEBUG("Initializing octomap server nodelet ...");
     ros::NodeHandle& private_nh = this->getPrivateNodeHandle();
-    server_.reset(new OctomapServer(private_nh));
+    server_.reset(new OctomapServer<pcl::PointXYZ, octomap::OcTree>(private_nh));
 
     std::string mapFilename("");
     if (private_nh.getParam("map_file", mapFilename)) {
@@ -60,7 +60,7 @@ public:
     }
   }
 private:
-  boost::shared_ptr<OctomapServer> server_;
+  boost::shared_ptr<OctomapServer<pcl::PointXYZ, octomap::OcTree>> server_;
 };
 
 } // namespace

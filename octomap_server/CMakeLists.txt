@@ -42,20 +42,21 @@ set(LINK_LIBS
   ${catkin_LIBRARIES}
 )
 
-add_library(${PROJECT_NAME} src/OctomapServer.cpp src/OctomapServerMultilayer.cpp src/TrackingOctomapServer.cpp)
+add_library(${PROJECT_NAME} src/OctomapServer.cpp src/OctomapServerMultilayer.cpp src/TrackingOctomapServer.cpp src/RadarPointOctomapServer.cpp src/RealSarMapServer.cpp)
 target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencfg)
 
 add_library(${PROJECT_NAME}_color src/OctomapServer.cpp src/OctomapServerMultilayer.cpp src/TrackingOctomapServer.cpp)
 target_link_libraries(${PROJECT_NAME}_color ${LINK_LIBS})
 add_dependencies(${PROJECT_NAME}_color ${PROJECT_NAME}_gencfg)
-target_compile_definitions(${PROJECT_NAME}_color PUBLIC COLOR_OCTOMAP_SERVER)
+target_compile_definitions(${PROJECT_NAME}_color PRIVATE COLOR_OCTOMAP_SERVER)
 
 add_executable(octomap_server_node src/octomap_server_node.cpp)
 target_link_libraries(octomap_server_node ${PROJECT_NAME} ${LINK_LIBS})
 
 add_executable(octomap_color_server_node src/octomap_server_node.cpp)
 target_link_libraries(octomap_color_server_node ${PROJECT_NAME}_color ${LINK_LIBS})
+target_compile_definitions(octomap_color_server_node PRIVATE COLOR_OCTOMAP_SERVER)
 
 add_executable(octomap_server_static src/octomap_server_static.cpp)
 target_link_libraries(octomap_server_static ${PROJECT_NAME} ${LINK_LIBS})
@@ -69,6 +70,12 @@ target_link_libraries(octomap_saver ${PROJECT_NAME} ${LINK_LIBS})
 add_executable(octomap_tracking_server_node src/octomap_tracking_server_node.cpp)
 target_link_libraries(octomap_tracking_server_node ${PROJECT_NAME} ${LINK_LIBS})
 
+add_executable(real_sar_map_server_node src/real_sar_map_server_node.cpp)
+target_link_libraries(real_sar_map_server_node ${PROJECT_NAME} ${LINK_LIBS})
+
+add_executable(radar_point_octomap_server_node src/radar_point_octomap_server_node.cpp)
+target_link_libraries(radar_point_octomap_server_node ${PROJECT_NAME} ${LINK_LIBS})
+
 # Nodelet
 add_library(octomap_server_nodelet src/octomap_server_nodelet.cpp)
 target_link_libraries(octomap_server_nodelet ${PROJECT_NAME} ${LINK_LIBS})
@@ -81,6 +88,8 @@ install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_color
   octomap_server_multilayer
   octomap_saver
   octomap_tracking_server_node
+  real_sar_map_server_node
+  radar_point_octomap_server_node
   octomap_server_nodelet
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

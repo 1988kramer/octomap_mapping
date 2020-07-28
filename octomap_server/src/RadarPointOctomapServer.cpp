@@ -1,5 +1,10 @@
 #include <octomap_server/RadarPointOctomapServer.h>
 
+using namespace octomap;
+
+namespace octomap_server
+{
+
 RadarPointOctomapServer::RadarPointOctomapServer(ros::NodeHandle private_nh_)
 : OctomapServer<pcl::PointXYZI, octomap::OcTree>(private_nh_),
   m_useLocalMapping(false),
@@ -8,11 +13,11 @@ RadarPointOctomapServer::RadarPointOctomapServer(ros::NodeHandle private_nh_)
   m_numScansInWindow(10),
   m_binWidth(0.070)
 {
-  private_nh.param("local_mapping", m_useLocalMapping, m_useLocalMapping);
-  private_nh.param("num_scans_in_window", m_numScansInWindow, m_numScansInWindow);
-  private_nh.param("bin_width", m_binWidth, m_binWidth);
-  private_nh.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
-  private_nh.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
+  private_nh_.param("local_mapping", m_useLocalMapping, m_useLocalMapping);
+  private_nh_.param("num_scans_in_window", m_numScansInWindow, m_numScansInWindow);
+  private_nh_.param("bin_width", m_binWidth, m_binWidth);
+  private_nh_.param("sensor_model/azimuth_fov", m_azimuthFov, m_azimuthFov);
+  private_nh_.param("sensor_model/elevation_fov", m_elevationFov, m_elevationFov);
 
   double rayAngle = 2.0 * atan((0.5 * m_res) / m_maxRange);// angle between two adjacent rays
   size_t num_azimuth_bins = 2.0 * m_azimuthFov / rayAngle;
@@ -41,8 +46,8 @@ void RadarPointOctomapServer::filterReflections(const PCLPointCloud& cloud,
                                                 PCLPointCloud& out_cloud)
 {
   // detect point clusters
-  pcl::PointCloud<pcl::PointXYZI>::ConstPtr cloudPtr(new const pcl::PointCloud<point_t>(cloud));
-  pcl::search::KdTree<pcl::PointXYZI>::Ptr tree(new pcl::search::KdTree<point_t>());
+  PCLPointCloud::ConstPtr cloudPtr(new const PCLPointCloud(cloud));
+  pcl::search::KdTree<PCLPoint>::Ptr tree(new pcl::search::KdTree<PCLPoint>());
   tree->setInputCloud(cloudPtr);
   std::vector<pcl::PointIndices> cluster_indices;
   pcl::EuclideanClusterExtraction<pcl::PointXYZI> ec;
@@ -148,7 +153,7 @@ void RadarPointOctomapServer::filterReflections(const PCLPointCloud& cloud,
 }
 
 void RadarPointOctomapServer::insertRadarScanToDeque(const tf::StampedTransform& sensorPoseTf,
-                                     const PCLPoint& pointCloud)
+                                                     const PCLPointCloud& pointCloud)
 {
   std_srvs::Empty::Request req; 
   std_srvs::Empty::Response resp;
@@ -337,7 +342,7 @@ void RadarPointOctomapServer::publishAll(const ros::Time& rostime){
   m_publish2DMap = (m_latchedTopics || m_mapPub.getNumSubscribers() > 0);
 
   // init markers for free space:
-  visualization_msgs:publishA:MarkerArray freeNodesVis;
+  visualization_msgs::MarkerArray freeNodesVis;
   // each array stores all cubes of a different size, one for each depth level:
   freeNodesVis.markers.resize(m_treeDepth+1);
 
@@ -409,7 +414,11 @@ void RadarPointOctomapServer::publishAll(const ros::Time& rostime){
 
         // insert into pointcloud:
         if (publishPointCloud) {
-          pclCloud.push_back(PCLPoint(x, y, z));
+          PCLPoint _point = PCLPoint();
+          _point.x = x;
+          _point.y = y;
+          _point.z = z;
+          pclCloud.push_back(_point);
         }
 
       }
@@ -452,7 +461,7 @@ void RadarPointOctomapServer::publishAll(const ros::Time& rostime){
     for (unsigned i= 0; i < occupiedNodesVis.markers.size(); ++i){
       double size = m_octree->getNodeSize(i);
 
-      if (m_sensorModel.compare("radar_point") == 0 && m_useLocalMapping)
+      if (m_useLocalMapping)
         occupiedNodesVis.markers[i].header.frame_id = m_worldFrameId;
       else
         occupiedNodesVis.markers[i].header.frame_id = m_baseFrameId;
@@ -521,5 +530,6 @@ void RadarPointOctomapServer::publishAll(const ros::Time& rostime){
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Map publishing in OctomapServer took %f sec", total_elapsed);
-
 }
+
+} // end namespace

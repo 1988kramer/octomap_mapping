@@ -32,7 +32,11 @@
 #include <octomap_server/OctomapServer.h>
 
 namespace octomap_server {
-class OctomapServerMultilayer : public OctomapServer{
+#ifdef COLOR_OCTOMAP_SERVER
+class OctomapServerMultilayer : public OctomapServer<pcl::PointXYZRGB, octomap::ColorOcTree>{
+#else
+class OctomapServerMultilayer : public OctomapServer<pcl::PointXYZ, octomap::OcTree>{
+#endif
 
 public:
   OctomapServerMultilayer(ros::NodeHandle private_nh_ = ros::NodeHandle("~"));

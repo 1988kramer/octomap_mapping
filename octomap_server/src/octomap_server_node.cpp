@@ -53,8 +53,11 @@ int main(int argc, char** argv){
     ROS_ERROR("%s", USAGE);
     exit(-1);
   }
-
-  OctomapServer<pcl::PointXYZ, octomap::OcTree> server;
+  #ifdef COLOR_OCTOMAP_SERVER
+    OctomapServer<pcl::PointXYZRGB, octomap::ColorOcTree> server;
+  #else
+    OctomapServer<pcl::PointXYZ, octomap::OcTree> server;
+  #endif
   ros::spinOnce();
 
   if (argc == 2){

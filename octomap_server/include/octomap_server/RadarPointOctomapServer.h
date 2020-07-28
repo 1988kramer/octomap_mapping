@@ -8,7 +8,7 @@ namespace octomap_server
   class RadarPointOctomapServer: public OctomapServer<pcl::PointXYZI, octomap::OcTree>
   {
   public:
-    RadarPointOctomapServer(ros::NodeHandle private_nh_);
+    RadarPointOctomapServer(ros::NodeHandle private_nh_ = ros::NodeHandle("~"));
 
     void insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& cloud);
 
@@ -50,7 +50,7 @@ namespace octomap_server
     double m_azimuthFov;
     double m_elevationFov;
     double m_binWidth;
-  }
+  };
 }
 
 #endif

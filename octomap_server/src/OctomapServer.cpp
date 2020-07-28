@@ -73,7 +73,8 @@ OctomapServer<point_t, octree_t>::OctomapServer(ros::NodeHandle private_nh_)
   m_compressMap(true),
   m_incrementalUpdate(false),
   m_initConfig(true),
-  m_speckle_size(1)
+  m_speckle_size(1),
+  test_mem_(0.1)
 {
   ros::NodeHandle private_nh(private_nh_);
   private_nh.param("frame_id", m_worldFrameId, m_worldFrameId);
@@ -98,12 +99,6 @@ OctomapServer<point_t, octree_t>::OctomapServer(ros::NodeHandle private_nh_)
   // distance of found plane from z=0 to be detected as ground (e.g. to exclude tables)
   private_nh.param("ground_filter/plane_distance", m_groundFilterPlaneDistance, m_groundFilterPlaneDistance);
 
-  private_nh.param("sensor_model/model", m_sensorModel, m_sensorModel);
-
-  if (!(m_sensorModel.compare("beam") == 0
-    || m_sensorModel.compare("radar_point") == 0
-    || m_sensorModel.compare("radar_image") == 0))
-    ROS_ERROR_STREAM("invalid sensor model (" << m_sensorModel << "), must be either \"beam\", \"radar_point\", or \"radar_image\"");
 
   private_nh.param("sensor_model/max_range", m_maxRange, m_maxRange);
   private_nh.param("sensor_model/min_range", m_minRange, m_minRange);
@@ -117,9 +112,6 @@ OctomapServer<point_t, octree_t>::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("compress_map", m_compressMap, m_compressMap);
   private_nh.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);  
 
-  // only filter ground plane if using beam sensor model
-  if (m_sensorModel.compare("beam") != 0)
-    m_filterGroundPlane = false;
 
   if (m_filterGroundPlane && (m_pointcloudMinZ > 0.0 || m_pointcloudMaxZ < 0.0)){
     ROS_WARN_STREAM("You enabled ground filtering but incoming pointclouds will be pre-filtered in ["
@@ -388,7 +380,7 @@ void OctomapServer<point_t, octree_t>::insertScan(const tf::Point& sensorOriginT
   // instead of direct scan insertion, compute update to filter ground:
   KeySet free_cells, occupied_cells;
   // insert ground points only as free:
-  for (PCLPointCloud::const_iterator it = ground.begin(); it != ground.end(); ++it){
+  for (typename PCLPointCloud::const_iterator it = ground.begin(); it != ground.end(); ++it){
     point3d point(it->x, it->y, it->z);
     // maxrange check
     if ((m_maxRange > 0.0) && ((point - sensorOrigin).norm() > m_maxRange) ) {
@@ -410,7 +402,10 @@ void OctomapServer<point_t, octree_t>::insertScan(const tf::Point& sensorOriginT
   }
 
   // all other points: free on ray, occupied on endpoint:
-  for (PCLPointCloud::const_iterator it = nonground.begin(); it != nonground.end(); ++it){
+  for (typename PCLPointCloud::const_iterator it = nonground.begin(); 
+       it != nonground.end(); 
+       ++it)
+  {
     point3d point(it->x, it->y, it->z);
     // maxrange check
     if ((m_maxRange < 0.0) || ((point - sensorOrigin).norm() <= m_maxRange) ) {
@@ -516,7 +511,7 @@ void OctomapServer<point_t, octree_t>::publishAll(const ros::Time& rostime){
   m_publish2DMap = (m_latchedTopics || m_mapPub.getNumSubscribers() > 0);
 
   // init markers for free space:
-  visualization_msgs:publishA:MarkerArray freeNodesVis;
+  visualization_msgs::MarkerArray freeNodesVis;
   // each array stores all cubes of a different size, one for each depth level:
   freeNodesVis.markers.resize(m_treeDepth+1);
 
@@ -535,7 +530,7 @@ void OctomapServer<point_t, octree_t>::publishAll(const ros::Time& rostime){
   handlePreNodeTraversal(rostime);
 
   // now, traverse all leafs in the tree:
-  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth),
+  for (typename OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth),
       end = m_octree->end(); it != end; ++it)
   {
     bool inUpdateBBX = isInUpdateBBX(it);
@@ -606,7 +601,11 @@ void OctomapServer<point_t, octree_t>::publishAll(const ros::Time& rostime){
           _point.r = r; _point.g = g; _point.b = b;
           pclCloud.push_back(_point);
 #else
-          pclCloud.push_back(PCLPoint(x, y, z));
+          PCLPoint _point;
+          _point.x = x;
+          _point.y = y;
+          _point.z = z;
+          pclCloud.push_back(_point);
 #endif
         }
 
@@ -756,7 +755,7 @@ bool OctomapServer<point_t, octree_t>::clearBBXSrv(BBXSrv::Request& req, BBXSrv:
   point3d max = pointMsgToOctomap(req.max);
 
   double thresMin = m_octree->getClampingThresMin();
-  for(OcTreeT::leaf_bbx_iterator it = m_octree->begin_leafs_bbx(min,max),
+  for(typename OcTreeT::leaf_bbx_iterator it = m_octree->begin_leafs_bbx(min,max),
       end=m_octree->end_leafs_bbx(); it!= end; ++it){
 
     it->setLogOdds(octomap::logodds(thresMin));
@@ -1073,7 +1072,7 @@ void OctomapServer<point_t, octree_t>::handlePostNodeTraversal(const ros::Time& 
 }
 
 template <typename point_t, typename octree_t>
-void OctomapServer<point_t, octree_t>::handleOccupiedNode(const OcTreeT::iterator& it){
+void OctomapServer<point_t, octree_t>::handleOccupiedNode(const typename OcTreeT::iterator& it){
 
   if (m_publish2DMap && m_projectCompleteMap){
     update2DMap(it, true);
@@ -1081,7 +1080,7 @@ void OctomapServer<point_t, octree_t>::handleOccupiedNode(const OcTreeT::iterato
 }
 
 template <typename point_t, typename octree_t>
-void OctomapServer<point_t, octree_t>::handleFreeNode(const OcTreeT::iterator& it){
+void OctomapServer<point_t, octree_t>::handleFreeNode(const typename OcTreeT::iterator& it){
 
   if (m_publish2DMap && m_projectCompleteMap){
     update2DMap(it, false);
@@ -1089,7 +1088,7 @@ void OctomapServer<point_t, octree_t>::handleFreeNode(const OcTreeT::iterator& i
 }
 
 template <typename point_t, typename octree_t>
-void OctomapServer<point_t, octree_t>::handleOccupiedNodeInBBX(const OcTreeT::iterator& it){
+void OctomapServer<point_t, octree_t>::handleOccupiedNodeInBBX(const typename OcTreeT::iterator& it){
 
   if (m_publish2DMap && !m_projectCompleteMap){
     update2DMap(it, true);
@@ -1097,7 +1096,7 @@ void OctomapServer<point_t, octree_t>::handleOccupiedNodeInBBX(const OcTreeT::it
 }
 
 template <typename point_t, typename octree_t>
-void OctomapServer<point_t, octree_t>::handleFreeNodeInBBX(const OcTreeT::iterator& it){
+void OctomapServer<point_t, octree_t>::handleFreeNodeInBBX(const typename OcTreeT::iterator& it){
 
   if (m_publish2DMap && !m_projectCompleteMap){
     update2DMap(it, false);
@@ -1105,7 +1104,7 @@ void OctomapServer<point_t, octree_t>::handleFreeNodeInBBX(const OcTreeT::iterat
 }
 
 template <typename point_t, typename octree_t>
-void OctomapServer<point_t, octree_t>::update2DMap(const OcTreeT::iterator& it, bool occupied){
+void OctomapServer<point_t, octree_t>::update2DMap(const typename OcTreeT::iterator& it, bool occupied){
 
   // update 2D map (occupied always overrides):
 
@@ -1316,7 +1315,13 @@ std_msgs::ColorRGBA OctomapServer<point_t, octree_t>::heightMapColor(double h) {
 
   return color;
 }
+
+#ifdef COLOR_OCTOMAP_SERVER
+template class OctomapServer<pcl::PointXYZRGB, octomap::ColorOcTree>;
+#else
+template class OctomapServer<pcl::PointXYZ, octomap::OcTree>;
+template class OctomapServer<pcl::PointXYZI, octomap::OcTree>;
+template class OctomapServer<pcl::PointXYZI, octomap::MeanOcTree>;
+#endif
 }
-
-
 
